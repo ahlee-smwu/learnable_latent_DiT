@@ -12,13 +12,14 @@ Huazhong University of Science and Technology (HUST)
 
 *Corresponding author: xgwang@hust.edu.cn
 
-
+[![PWC](https://img.shields.io/endpoint.svg?url=https://paperswithcode.com/badge/reconstruction-vs-generation-taming/image-generation-on-imagenet-256x256)](https://paperswithcode.com/sota/image-generation-on-imagenet-256x256?p=reconstruction-vs-generation-taming)
 <!-- [![arXiv](https://img.shields.io/badge/arXiv-VA_VAE-b31b1b.svg)]()
 [![arXiv](https://img.shields.io/badge/arXiv-FasterDiT-b31b1b.svg)](https://arxiv.org/abs/2410.10356) -->
 [![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![authors](https://img.shields.io/badge/by-hustvl-green)](https://github.com/hustvl)
-[![paper](https://img.shields.io/badge/preprint-VA_VAE-b31b1b.svg)](paper/vavae_0102-1440.pdf)
-<!-- [![arXiv](https://img.shields.io/badge/arXiv-FasterDiT-b31b1b.svg)](https://arxiv.org/abs/2410.10356) -->
+[![paper](https://img.shields.io/badge/arXiv-VA_VAE-b31b1b.svg)](https://arxiv.org/abs/2501.01423)
+[![arXiv](https://img.shields.io/badge/arXiv-FasterDiT-b31b1b.svg)](https://arxiv.org/abs/2410.10356)
+
 
 
 
@@ -125,11 +126,11 @@ This repo is mainly built on [DiT](https://github.com/facebookresearch/DiT), [Fa
 If you find our work useful, please consider to cite our related paper:
 
 ```
-# arxiv preprint TODO
+# arxiv preprint
 @article{vavae,
   title={Reconstruction v.s. Generation: Taming Optimization Dilemma in Latent Diffusion},
   author={Yao, Jingfeng and Wang, Xinggang},
-  journal={to be released},
+  journal={arXiv preprint arXiv:2501.01423},
   year={2025}
 }
 
