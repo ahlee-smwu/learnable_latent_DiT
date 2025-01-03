@@ -128,7 +128,7 @@ If you find our work useful, please consider to cite our related paper:
 ```
 # arxiv preprint
 @article{vavae,
-  title={Reconstruction v.s. Generation: Taming Optimization Dilemma in Latent Diffusion},
+  title={Reconstruction vs. Generation: Taming Optimization Dilemma in Latent Diffusion Models},
   author={Yao, Jingfeng and Wang, Xinggang},
   journal={arXiv preprint arXiv:2501.01423},
   year={2025}
