@@ -468,7 +468,9 @@ class AutoencoderKL(nn.Module):
 
     def init_from_ckpt(self, path):
         if self.model_type == 'vavae':
-            sd = torch.load(path, map_location="cpu")["state_dict"]
+            sd = torch.load(path, map_location="cpu")
+            if 'state_dict' in sd.keys():
+                sd = sd['state_dict']
             sd = {k: v for k, v in sd.items() if 'foundation_model.model' and 'loss' not in k}
             msg = self.load_state_dict(sd, strict=False)
         elif self.model_type == 'marvae':
