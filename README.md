@@ -38,9 +38,11 @@ Huazhong University of Science and Technology (HUST)
 
 ## 📰 News
 
+- **[2025.01.16]** We have released more experimental tokenizer variants in our ablations. Check them [here](https://huggingface.co/hustvl/va-vae-imagenet256-experimental-variants/tree/main).
+
 - **[2025.01.02]** We have released the pre-trained weights.
 
-- **[2025.01.01]** We release the code and paper for VA-VAE and LightningDiT! The weights and pre-extracted latents will be released soon.
+- **[2025.01.01]** We have released the code and paper for VA-VAE and LightningDiT! The weights and pre-extracted latents will be released soon.
 
 ## 📄 Introduction
 
