@@ -40,7 +40,7 @@
 
 1. We provide a training log [here](https://huggingface.co/hustvl/va-vae-imagenet256-experimental-variants/tree/main/tensorboard_logs) for reference. All of our experimental variants are provided [here](https://huggingface.co/hustvl/va-vae-imagenet256-experimental-variants/tree/main).
 
-2. Put your checkpoint path into ``lightningdit/tokenizer/configs/vavae_f16d32.yaml`` and use ``evaluate_tokenizer.py`` to evaluate the model.
+2. Put your checkpoint path into ``lightningdit/tokenizer/configs/vavae_f16d32.yaml`` and use ``lightningdit/evaluate_tokenizer.py`` to evaluate the model.
 
 ### Acknowledgement
 
