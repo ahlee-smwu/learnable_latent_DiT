@@ -38,7 +38,7 @@ Huazhong University of Science and Technology (HUST)
 
 ## 📰 News
 
-- **[2025.02.27]** VA-VAE has been accepted by CVPR 2025! 🎉🎉🎉
+- **[2025.02.27]** **VA-VAE has been accepted by CVPR 2025!** 🎉🎉🎉
 
 - **[2025.02.25]** We have released [training codes of VA-VAE](vavae)!
 
