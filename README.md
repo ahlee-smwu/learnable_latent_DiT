@@ -38,6 +38,8 @@ Huazhong University of Science and Technology (HUST)
 
 ## 📰 News
 
+- **[2025.02.27]** VA-VAE has been accepted by CVPR 2025! 🎉🎉🎉
+
 - **[2025.02.25]** We have released [training codes of VA-VAE](vavae)!
 
 - **[2025.01.16]** More experimental tokenizer variants have been released! You could check them [here](https://huggingface.co/hustvl/va-vae-imagenet256-experimental-variants/tree/main).
@@ -130,7 +132,7 @@ This repo is mainly built on [DiT](https://github.com/facebookresearch/DiT), [Fa
 If you find our work useful, please consider to cite our related paper:
 
 ```
-# arxiv preprint
+# CVPR 2025
 @article{vavae,
   title={Reconstruction vs. Generation: Taming Optimization Dilemma in Latent Diffusion Models},
   author={Yao, Jingfeng and Wang, Xinggang},
