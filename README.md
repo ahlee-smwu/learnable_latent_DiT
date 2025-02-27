@@ -30,7 +30,7 @@ Huazhong University of Science and Technology (HUST)
 
 ## ✨ Highlights
 
-- Latent diffusion system with 0.28 rFID and **1.35 FID on ImageNet-256** generation, **surpassing all published state-of-the-art**!
+- Latent diffusion system with 0.28 rFID and **1.35 FID on ImageNet-256** generation!
 
 - **More than 21.8× faster** convergence with **VA-VAE** and **LightningDiT** than original DiT!
 
