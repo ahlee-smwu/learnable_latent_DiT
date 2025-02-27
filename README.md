@@ -17,8 +17,8 @@ Huazhong University of Science and Technology (HUST)
 [![arXiv](https://img.shields.io/badge/arXiv-FasterDiT-b31b1b.svg)](https://arxiv.org/abs/2410.10356) -->
 [![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![authors](https://img.shields.io/badge/by-hustvl-green)](https://github.com/hustvl)
-[![paper](https://img.shields.io/badge/arXiv-VA_VAE-b31b1b.svg)](https://arxiv.org/abs/2501.01423)
-[![arXiv](https://img.shields.io/badge/arXiv-FasterDiT-b31b1b.svg)](https://arxiv.org/abs/2410.10356)
+[![paper](https://img.shields.io/badge/CVPR'25-VA_VAE-b31b1b.svg)](https://arxiv.org/abs/2501.01423)
+[![arXiv](https://img.shields.io/badge/NeurIPS'24-FasterDiT-b31b1b.svg)](https://arxiv.org/abs/2410.10356)
 
 
 
