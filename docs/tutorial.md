@@ -38,6 +38,10 @@
     
     Anyway, free feel to train the model that meets your resources and just enjoy the experiments. Hope LightningDiT won't let you down. 😊
 
+- (Optional) ``Loss NaN`` Issues:
+
+    We have received some feedback [#1](https://github.com/hustvl/LightningDiT/issues/10)\& [#2](https://github.com/hustvl/LightningDiT/issues/23) indicating that during large-scale training of LightningDiT, there is a certain probability of encountering NaN loss issues. Using QKNorm can effectively enhance training stability (though it may result in a slight decrease in convergence speed), thanks a lot @[Kai Zhao](https://scholar.google.com/citations?user=HwSWNyUAAAAJ&hl=zh-CN)! 🥰
+
 ### Inference
 
 - Let's see some demo inference results first before we calculate FID score.
