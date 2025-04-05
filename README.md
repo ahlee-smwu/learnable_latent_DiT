@@ -132,22 +132,24 @@ This repo is mainly built on [DiT](https://github.com/facebookresearch/DiT), [Fa
 
 ## 📝 Citation
 
-If you find our work useful, please consider to cite our related paper:
+If you find our work useful, please cite our related paper:
 
 ```
 # CVPR 2025
-@article{vavae,
-  title={Reconstruction vs. Generation: Taming Optimization Dilemma in Latent Diffusion Models},
-  author={Yao, Jingfeng and Wang, Xinggang},
-  journal={arXiv preprint arXiv:2501.01423},
+@inproceedings{yao2025vavae,
+  title={Reconstruction vs. generation: Taming optimization dilemma in latent diffusion models},
+  author={Yao, Jingfeng and Yang, Bin and Wang, Xinggang},
+  booktitle={Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition},
   year={2025}
 }
 
-# NeurIPS 24
-@article{fasterdit,
-  title={FasterDiT: Towards Faster Diffusion Transformers Training without Architecture Modification},
+# NeurIPS 2024
+@article{yao2024fasterdit,
+  title={Fasterdit: Towards faster diffusion transformers training without architecture modification},
   author={Yao, Jingfeng and Wang, Cheng and Liu, Wenyu and Wang, Xinggang},
-  journal={arXiv preprint arXiv:2410.10356},
+  journal={Advances in Neural Information Processing Systems},
+  volume={37},
+  pages={56166--56189},
   year={2024}
 }
 ```
