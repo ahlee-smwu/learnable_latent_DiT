@@ -163,6 +163,8 @@ if __name__ == "__main__":
     # Demo Usage:
 
     # We provide latent cache demos of ``f16d32`` and ``f16d32_vfdinov2``
+    # They are randomly sampled VAE latents. You can also generate them by yourself.
+    # https://huggingface.co/hustvl/va-vae-imagenet256-experimental-variants/tree/main
     # You can run the following code to visualize the t-SNE of the demo dataset.
     # ---------------------------------------------------
     # run:
