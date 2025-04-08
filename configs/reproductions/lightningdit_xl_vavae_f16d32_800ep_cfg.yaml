@@ -15,7 +15,6 @@ data:
   latent_norm: true
   latent_multiplier: 1.0
 
-# recommend to use default settings (we wil release codes with SD-VAE later)
 vae:
   model_name: 'vavae_f16d32'
   downsample_ratio: 16
@@ -23,7 +22,8 @@ vae:
 # recommend to use default settings
 model:
   model_type: LightningDiT-XL/1
-  use_qknorm: false
+  use_qknorm: false # <----- if you are encountering NaN loss issues, we recommend enabling it. 
+                    #        It improves training stability but slightly slows down the convergence.
   use_swiglu: true
   use_rope: true
   use_rmsnorm: true
