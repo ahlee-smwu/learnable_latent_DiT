@@ -6,7 +6,7 @@ Taming Optimization Dilemma in Latent Diffusion Models</h2>
 
 **_FID=1.35 on ImageNet-256 & 21.8x faster training than DiT!_**
 
-[Jingfeng Yao](https://github.com/JingfengYao)¹, Bin Yang², [Xinggang Wang](https://xwcv.github.io/index.htm)¹*
+[Jingfeng Yao](https://github.com/JingfengYao)¹, [Bin Yang](https://www.cs.toronto.edu/~byang/)², [Xinggang Wang](https://xwcv.github.io/index.htm)¹*
 
 ¹ ​Huazhong University of Science and Technology (HUST)  
 ² ​Independent Researcher
