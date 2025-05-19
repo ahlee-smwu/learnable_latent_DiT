@@ -24,7 +24,7 @@ model:
     lossconfig:
       target: ldm.modules.losses.LPIPSWithDiscriminator
       params:
-        disc_start: 5001
+        disc_start: # 5001 -> 1 -> 1
         kl_weight: 1.0e-06
         disc_weight: 0.5
         # hyper-param for vision foundation model alignment
