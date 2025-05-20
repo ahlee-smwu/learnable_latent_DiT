@@ -39,7 +39,7 @@ Taming Optimization Dilemma in Latent Diffusion Models</h2>
 
 ## 📰 News
 
-**VA-VAE has been listed in [CVPR 2025 Award Candidates](https://cvpr.thecvf.com/virtual/2025/events/AwardCandidates2025)!🏆**
+**VA-VAE has been listed in [CVPR 2025 Award Candidates](https://cvpr.thecvf.com/virtual/2025/events/AwardCandidates2025)!🏆(final 16 papers of 2878 accepted ones)**
 
 - **[2025.04.04]** VA-VAE has been selected as **Oral Presentation!** 
 
