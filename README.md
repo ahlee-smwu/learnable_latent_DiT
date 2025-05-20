@@ -4,6 +4,8 @@
 
 Taming Optimization Dilemma in Latent Diffusion Models</h2>
 
+**CVPR 2025 Award Candidate**
+
 **_FID=1.35 on ImageNet-256 & 21.8x faster training than DiT!_**
 
 [Jingfeng Yao](https://github.com/JingfengYao)¹, [Bin Yang](https://www.cs.toronto.edu/~byang/)², [Xinggang Wang](https://xwcv.github.io/index.htm)¹*
