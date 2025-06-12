@@ -4,8 +4,6 @@
 
 Taming Optimization Dilemma in Latent Diffusion Models</h2>
 
-**CVPR 2025 Award Candidate**
-
 **_FID=1.35 on ImageNet-256 & 21.8x faster training than DiT!_**
 
 [Jingfeng Yao](https://github.com/JingfengYao)¹, [Bin Yang](https://www.cs.toronto.edu/~byang/)², [Xinggang Wang](https://xwcv.github.io/index.htm)¹*
@@ -40,8 +38,6 @@ Taming Optimization Dilemma in Latent Diffusion Models</h2>
 - **Surpass DiT with FID=2.11 with only 8 GPUs in about 10 hours**. Let's make diffusion transformers research more affordable!
 
 ## 📰 News
-
-**VA-VAE has been listed in [CVPR 2025 Award Candidates](https://cvpr.thecvf.com/virtual/2025/events/AwardCandidates2025)!🏆(final 16 papers of 2878 accepted ones)**
 
 - **[2025.04.04]** VA-VAE has been selected as **Oral Presentation!** 
 
