@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="VcsDirectoryMappings">
+    <mapping directory="" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/guided-diffusion" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/hustvl" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/imagenet256-latents-vave-f16d32-dinov2" vcs="Git" />
+  </component>
+</project>
