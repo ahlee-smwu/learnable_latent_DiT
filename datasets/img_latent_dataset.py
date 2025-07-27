@@ -43,6 +43,7 @@ class ImgLatentDataset(Dataset):
     def get_latent_stats(self):
         latent_stats_cache_file = os.path.join(self.data_dir, "latents_stats.pt")
         if not os.path.exists(latent_stats_cache_file):
+            print('latent_stats_cache_file', latent_stats_cache_file)
             latent_stats = self.compute_latent_stats()
             torch.save(latent_stats, latent_stats_cache_file)
         else:
