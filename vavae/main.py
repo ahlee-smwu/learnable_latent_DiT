@@ -8,7 +8,7 @@ pytorch-lightning 2.x. Thanks for their great code!
 Main codes related to VA-VAE are:
 - ldm/models/foundation_models.py
 - ldm/models/autoencoder.py
-- ldm/modules/losses/contperceptual.py
+- ldm/modules/losses/contperceptual.py  # about loss
 
 by Jingfeng Yao
 from HUST-VL
