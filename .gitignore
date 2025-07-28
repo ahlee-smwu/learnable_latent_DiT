@@ -3,4 +3,5 @@ demo_img/*
 output/*
 tensorboard_logs
 *internal*
-guided-diffusion
+pretrained_weight
+vavae/logs

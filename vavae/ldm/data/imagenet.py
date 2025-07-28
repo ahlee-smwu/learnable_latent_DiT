@@ -111,7 +111,8 @@ class ImageNetBase(Dataset):
             human_dict = f.read().splitlines()
             human_dict = dict(line.split(maxsplit=1) for line in human_dict)
 
-        self.human_labels = [human_dict[s] for s in self.synsets]
+        self.human_labels = [human_dict.get(s, s) for s in self.synsets]
+        # if list has already human label, then pass
 
         labels = {
             "relpath": np.array(self.relpaths),
@@ -160,8 +161,10 @@ class ImageNetTrain(ImageNetBase):
         self.random_crop = retrieve(self.config, "ImageNetTrain/random_crop",
                                     default=True)
         if not tdu.is_prepared(self.root):
+            print("Pass downloading dataset")
+            pass
             # prep
-            print("Preparing dataset {} in {}".format(self.NAME, self.root))
+            '''print("Preparing dataset {} in {}".format(self.NAME, self.root))
 
             datadir = self.datadir
             if not os.path.exists(datadir):
@@ -191,7 +194,7 @@ class ImageNetTrain(ImageNetBase):
             with open(self.txt_filelist, "w") as f:
                 f.write(filelist)
 
-            tdu.mark_prepared(self.root)
+            tdu.mark_prepared(self.root)'''
 
 
 class ImageNetValidation(ImageNetBase):
@@ -225,8 +228,9 @@ class ImageNetValidation(ImageNetBase):
         self.random_crop = retrieve(self.config, "ImageNetValidation/random_crop",
                                     default=False)
         if not tdu.is_prepared(self.root):
+            pass
             # prep
-            print("Preparing dataset {} in {}".format(self.NAME, self.root))
+            '''print("Preparing dataset {} in {}".format(self.NAME, self.root))
 
             datadir = self.datadir
             if not os.path.exists(datadir):
@@ -265,7 +269,7 @@ class ImageNetValidation(ImageNetBase):
             with open(self.txt_filelist, "w") as f:
                 f.write(filelist)
 
-            tdu.mark_prepared(self.root)
+            tdu.mark_prepared(self.root)'''
 
 
 

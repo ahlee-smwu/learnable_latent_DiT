@@ -1,6 +1,6 @@
 config_path=$CONFIG_PATH
 
-torchrun --nproc_per_node=8 \
+torchrun --nproc_per_node=1 \
     --nnodes=$WORLD_SIZE \
     --node_rank=$RANK \
     --master_addr=$MASTER_ADDR \
