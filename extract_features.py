@@ -89,7 +89,7 @@ def main(args):
             x = data[0]
             y = data[1]  # (N,)
             
-            z = tokenizer.encode_images(x).detach().cpu()  # (N, C, H, W)
+            z = tokenizer.encode_images(x).detach().cpu()  # (N, C, H, W) # z is sample of posterior(mu.sigma)
 
             if batch_idx == 0 and rank == 0:
                 print('latent shape', z.shape, 'dtype', z.dtype)

@@ -19,7 +19,7 @@ data:
   image_size: 256
   num_classes: 1000
   num_workers: 8
-  latent_norm: true
+  latent_norm: true # to normalize, channel-wise
   latent_multiplier: 1.0
 
 # recommend to use default settings (we wil release codes with SD-VAE later)
