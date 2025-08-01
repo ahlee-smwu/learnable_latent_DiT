@@ -67,7 +67,7 @@ class VA_VAE:
         """
         with torch.no_grad():
             posterior = self.model.encode(images.cuda())
-            return posterior.sample()
+            return posterior.sample() # z
 
     def decode_to_images(self, z):
         """Decode latent representations to images

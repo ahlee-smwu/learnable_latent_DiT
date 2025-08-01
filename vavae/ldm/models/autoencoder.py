@@ -352,6 +352,7 @@ class AutoencoderKL(pl.LightningModule):
 
     def forward(self, input, sample_posterior=True):
         posterior = self.encode(input)
+        # post: (B, D*2(mean, std)) D: latent dimension
         if sample_posterior:
             z = posterior.sample()
         else:
@@ -365,6 +366,7 @@ class AutoencoderKL(pl.LightningModule):
             else:
                 z = self.linear_proj(z)
             return dec, posterior, z, aux_feature
+                # recon(=dec output), post(=enc output), sample of post, aux
 
         return dec, posterior, None, None
 
@@ -406,6 +408,31 @@ class AutoencoderKL(pl.LightningModule):
         disc_opt.zero_grad()
         self.manual_backward(discloss)
         disc_opt.step()
+
+    def training_step_eps(self, batch, batch_idx):
+        inputs = self.get_input(batch, self.image_key)
+        reconstructions, posterior, z, aux_feature = self(inputs)
+
+        # if optimizer_idx == 0:
+        # train encoder+decoder+logvar
+        enc_last_layer = self.encoder.conv_out.weight
+        aeloss, log_dict_ae = self.loss(inputs, reconstructions, posterior, 0, self.global_step,
+                                        last_layer=self.get_last_layer(), split="train", z=z, aux_feature=aux_feature,
+                                        enc_last_layer=enc_last_layer)
+        self.log("aeloss", aeloss, prog_bar=True, logger=True, on_step=True, on_epoch=True)
+        self.log_dict(log_dict_ae, prog_bar=False, logger=True, on_step=True, on_epoch=False)
+
+        # if optimizer_idx == 1:
+        # train the discriminator
+        discloss, log_dict_disc = self.loss(inputs, reconstructions, posterior, 1, self.global_step,
+                                            last_layer=self.get_last_layer(), split="train",
+                                            enc_last_layer=enc_last_layer)
+
+        self.log("discloss", discloss, prog_bar=True, logger=True, on_step=True, on_epoch=True)
+        self.log_dict(log_dict_disc, prog_bar=False, logger=True, on_step=True, on_epoch=False)
+
+        return aeloss, discloss, posterior           # for learnable eps, custom train loop
+
 
     def validation_step(self, batch, batch_idx, dataloader_idx=0, data_type=None):
         inputs = self.get_input(batch, self.image_key)

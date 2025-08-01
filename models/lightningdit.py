@@ -401,7 +401,7 @@ class LightningDiT(nn.Module):
 
         x = self.x_embedder(x) + self.pos_embed  # (N, T, D), where T = H * W / patch_size ** 2
         t = self.t_embedder(t)                   # (N, D)
-        y = self.y_embedder(y, self.training)    # (N, D)
+        y = self.y_embedder(y, self.training)    # (N, D) # 존재하는 값인지 확인, 없어야 diffusion 적으로 말이 될 것 같은데
         c = t + y                                # (N, D)
 
         for block in self.blocks:

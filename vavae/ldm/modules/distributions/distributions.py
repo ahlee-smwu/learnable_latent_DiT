@@ -64,6 +64,10 @@ class DiagonalGaussianDistribution(object):
     def mode(self):
         return self.mean
 
+    # for learnable eps
+    def mu_sigma(self):
+        return self.mean, self.std
+
 
 def normal_kl(mean1, logvar1, mean2, logvar2):
     """

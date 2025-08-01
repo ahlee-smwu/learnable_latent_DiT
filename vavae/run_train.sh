@@ -5,6 +5,6 @@ torchrun --nproc_per_node=1 \
     --node_rank=$RANK \
     --master_addr=$MASTER_ADDR \
     --master_port=$MASTER_PORT \
-    main.py \
+    vavae/train.py \
     --base $config_path \
     --train

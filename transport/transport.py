@@ -23,7 +23,7 @@ class PathType(enum.Enum):
     Which type of path to use.
     """
 
-    LINEAR = enum.auto()
+    LINEAR = enum.auto() # lightiningDiT
     GVP = enum.auto()
     VP = enum.auto()
 
@@ -54,7 +54,7 @@ class Transport:
         shift_lg=False,
     ):
         path_options = {
-            PathType.LINEAR: path.ICPlan,
+            PathType.LINEAR: path.ICPlan, #LightningDiT default
             PathType.GVP: path.GVPCPlan,
             PathType.VP: path.VPCPlan,
         }
@@ -140,7 +140,9 @@ class Transport:
         """
         
         x0 = th.randn_like(x1)
-        t0, t1 = self.check_interval(self.train_eps, self.sample_eps)
+        t0, t1 = self.check_interval(self.train_eps, self.sample_eps) # t0: time 0, t1: time 1
+
+        # time sampling algorithm
         if not self.use_lognorm:
             if self.partitial_train is not None and th.rand(1) < self.partial_ratio:
                 t = th.rand((x1.shape[0],)) * (self.partitial_train[1] - self.partitial_train[0]) + self.partitial_train[0]
@@ -164,6 +166,45 @@ class Transport:
 
         t = t.to(x1)
         return t, x0, x1
+
+    def sample_learnable_eps(self, x1, sp_timesteps=None, shifted_mu=0, learned_mu=0, learned_sigma=1):
+        """Sampling x0 & t based on shape of x1 (if needed)
+          Args:
+            x1 - data point; [batch, *dim]
+        """
+
+        # x0 = th.randn_like(x1)
+        x0 = learned_mu + learned_sigma * th.randn_like(learned_mu) # x0, mu&sigma dim 맞춰야 함
+        # x0 = learned_mu + learned_sigma * th.randn_like(x1) # broadcast ver
+
+        t0, t1 = self.check_interval(self.train_eps, self.sample_eps)  # t0: time 0, t1: time 1
+
+        # time sampling algorithm
+        if not self.use_lognorm:
+            if self.partitial_train is not None and th.rand(1) < self.partial_ratio:
+                t = th.rand((x1.shape[0],)) * (self.partitial_train[1] - self.partitial_train[0]) + \
+                    self.partitial_train[0]
+            else:
+                t = th.rand((x1.shape[0],)) * (t1 - t0) + t0
+        else:
+            # random < partial_ratio, then sample from the partial range
+            if not self.shift_lg:
+                if self.partitial_train is not None and th.rand(1) < self.partial_ratio:
+                    t = self.sample_in_range(0, 1, x1.shape[0], range_min=self.partitial_train[0],
+                                             range_max=self.partitial_train[1])
+                else:
+                    t = self.sample_logit_normal(0, 1, size=x1.shape[0]) * (t1 - t0) + t0
+            else:
+                assert self.partitial_train is None, "Shifted lognormal distribution is not compatible with partial training"
+                t = self.sample_logit_normal(shifted_mu, 1, size=x1.shape[0]) * (t1 - t0) + t0
+
+        # overwrite t if sp_timesteps is provided (for validation)
+        if sp_timesteps is not None:
+            # uniform sampling between self.sp_timesteps[0] and self.sp_timesteps[1]
+            t = th.rand((x1.shape[0],)) * (sp_timesteps[1] - sp_timesteps[0]) + sp_timesteps[0]
+
+        t = t.to(x1)
+        return t, x0, x1
     
 
     def training_losses(
@@ -178,14 +219,15 @@ class Transport:
         Args:
         - model: backbone model; could be score, noise, or velocity
         - x1: datapoint
-        - model_kwargs: additional arguments for the model
+        - model_kwargs: additional arguments for the model # y (label)
         """
         if model_kwargs == None:
             model_kwargs = {}
         
-        t, x0, x1 = self.sample(x1, sp_timesteps, shifted_mu)
+        t, x0, x1 = self.sample(x1, sp_timesteps, shifted_mu) # x0 생성에서 eps가 작용함, 이걸 learnable eps로 바꾸자
         t, xt, ut = self.path_sampler.plan(t, x0, x1)
-        model_output = model(xt, t, **model_kwargs)
+            # t: time, xt: target of time t(=forward xt), ut: x0-x1, xt랑 관련없음
+        model_output = model(xt, t, **model_kwargs) # pred of model
         B, *_, C = xt.shape
         assert model_output.size() == (B, *xt.size()[1:-1], C)
 
@@ -207,11 +249,62 @@ class Transport:
             else:
                 raise NotImplementedError()
             
-            if self.model_type == ModelType.NOISE:
+            if self.model_type == ModelType.NOISE:  # LightningDiT ?
                 terms['loss'] = mean_flat(weight * ((model_output - x0) ** 2))
             else:
                 terms['loss'] = mean_flat(weight * ((model_output * sigma_t + x0) ** 2))
                 
+        return terms
+
+    def training_losses_learnable_eps(
+            self,
+            model,
+            x1,
+            model_kwargs=None,
+            sp_timesteps=None,
+            shifted_mu=0,
+            learned_mu=0,
+            learned_sigma=1
+    ):
+        """Loss for training the score model
+        Args:
+        - model: backbone model; could be score, noise, or velocity
+        - x1: datapoint
+        - model_kwargs: additional arguments for the model # y (label)
+        """
+        if model_kwargs == None:
+            model_kwargs = {}
+
+        t, x0, x1 = self.sample_learnable_eps(x1, sp_timesteps, shifted_mu, learned_mu, learned_sigma)  # x0 생성에서 eps가 작용함, 이걸 learnable eps로 바꿈
+        t, xt, ut = self.path_sampler.plan(t, x0, x1)
+        # t: time, xt: target of time t(=forward xt), ut: x0-x1, xt랑 관련없음
+        model_output = model(xt, t, **model_kwargs)  # pred of model
+        B, *_, C = xt.shape
+        assert model_output.size() == (B, *xt.size()[1:-1], C)
+
+        terms = {}
+        terms['pred'] = model_output
+        if self.model_type == ModelType.VELOCITY:
+            terms['loss'] = mean_flat(((model_output - ut) ** 2))
+            if self.use_cosine_loss:
+                terms['cos_loss'] = mean_flat(1 - th.nn.functional.cosine_similarity(model_output, ut, dim=1))
+        else:
+            _, drift_var = self.path_sampler.compute_drift(xt, t)
+            sigma_t, _ = self.path_sampler.compute_sigma_t(path.expand_t_like_x(t, xt))
+            if self.loss_type in [WeightType.VELOCITY]:
+                weight = (drift_var / sigma_t) ** 2
+            elif self.loss_type in [WeightType.LIKELIHOOD]:
+                weight = drift_var / (sigma_t ** 2)
+            elif self.loss_type in [WeightType.NONE]:
+                weight = 1
+            else:
+                raise NotImplementedError()
+
+            if self.model_type == ModelType.NOISE:  # LightningDiT ?
+                terms['loss'] = mean_flat(weight * ((model_output - x0) ** 2))
+            else:
+                terms['loss'] = mean_flat(weight * ((model_output * sigma_t + x0) ** 2))
+
         return terms
     
 

@@ -114,20 +114,20 @@ class ICPlan:
     def compute_mu_t(self, t, x0, x1):
         """Compute the mean of time-dependent density p_t"""
         t = expand_t_like_x(t, x1)
-        alpha_t, _ = self.compute_alpha_t(t)
-        sigma_t, _ = self.compute_sigma_t(t)
-        return alpha_t * x1 + sigma_t * x0
+        alpha_t, _ = self.compute_alpha_t(t) # t
+        sigma_t, _ = self.compute_sigma_t(t) # 1-t
+        return alpha_t * x1 + sigma_t * x0 # ddpm forward noise, x_t
     
     def compute_xt(self, t, x0, x1):
         """Sample xt from time-dependent density p_t; rng is required"""
-        xt = self.compute_mu_t(t, x0, x1)
+        xt = self.compute_mu_t(t, x0, x1) # ddpm forward noise, x_t
         return xt
     
     def compute_ut(self, t, x0, x1, xt):
         """Compute the vector field corresponding to p_t"""
         t = expand_t_like_x(t, x1)
-        _, d_alpha_t = self.compute_alpha_t(t)
-        _, d_sigma_t = self.compute_sigma_t(t)
+        _, d_alpha_t = self.compute_alpha_t(t) # 1
+        _, d_sigma_t = self.compute_sigma_t(t) # -1
         return d_alpha_t * x1 + d_sigma_t * x0
     
     def plan(self, t, x0, x1):

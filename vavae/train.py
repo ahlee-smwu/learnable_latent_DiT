@@ -496,7 +496,7 @@ if __name__ == "__main__":
     now = datetime.datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
 
     # add cwd for convenience and to make classes in this file available when
-    # running as `python main.py`
+    # running as `python train.py`
     # (in particular `main.DataModuleFromConfig`)
     sys.path.append(os.getcwd())
 
@@ -543,6 +543,13 @@ if __name__ == "__main__":
 
         # model
         model = instantiate_from_config(config.model)
+        total_params = sum(p.numel() for p in model.parameters())
+        print(f"전체 파라미터 수: {total_params}")             # 391718245
+        trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        print(f"학습 가능한 파라미터 수: {trainable_params}")    # 72634469(72M)
+        for name, param in model.named_parameters():
+            # print(f"{name}: {param.numel()} params, requires_grad={param.requires_grad}")
+            pass
 
         # if config.init_weight is not None, load the weights
         try:
