@@ -278,9 +278,9 @@ class LightningDiT(nn.Module):
     """
     def __init__(
         self,
-        input_size=32,
+        input_size=32, # Lightning DiT default: 16
         patch_size=2,
-        in_channels=32,
+        in_channels=32, # Lightning DiT default: 32
         hidden_size=1152,
         depth=28,
         num_heads=16,

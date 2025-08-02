@@ -6,6 +6,8 @@ DiT_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.append(vavae_path)
 sys.path.append(DiT_path)
 
+os.environ["CUDA_VISIBLE_DEVICES"] = "0,1,2,3"
+
 import argparse, os, sys, datetime, glob, importlib, csv
 import numpy as np
 import time
@@ -58,6 +60,7 @@ from datasets.img_latent_dataset import ImgLatentDataset
 from ldm.data.base import Txt2ImgIterableBaseDataset
 from ldm.util import instantiate_from_config
 from train import DataModuleFromConfig
+
 
 def do_train(train_config, accelerator):
     """
@@ -116,7 +119,7 @@ def do_train(train_config, accelerator):
     Model 2: LightningDiT
     """
     model2 = LightningDiT_models[train_config['model']['model_type']](
-        input_size=latent_size,
+        input_size=train_config['data']['image_size'], # latent x, direct image data
         num_classes=train_config['data']['num_classes'],
         use_qknorm=train_config['model']['use_qknorm'],
         use_swiglu=train_config['model']['use_swiglu'] if 'use_swiglu' in train_config['model'] else False,
@@ -283,7 +286,9 @@ def do_train(train_config, accelerator):
     if not train_config['train']['resume']:
         train_steps = 0
     log_steps = 0
-    running_loss = 0
+    running_loss2 = 0
+    running_loss1_ae = 0
+    running_loss1_disc = 0
     start_time = time()
     use_checkpoint = train_config['train']['use_checkpoint'] if 'use_checkpoint' in train_config['train'] else True
     if accelerator.is_main_process:
@@ -303,14 +308,29 @@ def do_train(train_config, accelerator):
                 x = x.to(device)
                 y = y.to(device)
             model_kwargs = dict(y=y)
+                # x: torch.Size([1, 256, 256, 3])
+
             """ loss1 """
-            loss1_ae, loss1_disc, posterior = model1.training_step_eps(batch, batch_idx=None)
+            loss1_ae, loss1_disc, posterior = model1.module.training_step_eps(batch, batch_idx=None)
             # get mu, sigma from this VA-VAE(model1)
+
+            """mu, sigma interpolate for usage as DiT eps"""
             learned_mu, learned_sigma = posterior.mu_sigma()
+            learned_mu = learned_mu.permute(0, 2, 3, 1)     # torch.Size([1, 32, 16, 16]) -> torch.Size([1, 16, 16, 32])
+            learned_sigma = learned_sigma.permute(0, 2, 3, 1)   # torch.Size([1, 32, 16, 16]) -> torch.Size([1, 16, 16, 32])
+            # interpolate for learnable eps"""
+            learned_mu = learned_mu.unsqueeze(2).repeat(1, 1, 16, 1, 1)  # [1, 16, 16, 16, 3]
+            learned_mu = learned_mu.view(-1, 256, 16, 3)
+            learned_mu = learned_mu.unsqueeze(3).repeat(1, 1, 1, 16, 1)  # [1, 256, 16, 16, 3]
+            learned_mu = learned_mu.view(-1, 256, 256, 3)
+            learned_sigma = learned_sigma.unsqueeze(2).repeat(1, 1, 16, 1, 1)  # [1, 16, 16, 16, 3]
+            learned_sigma = learned_sigma.view(-1, 256, 16, 3)
+            learned_sigma = learned_sigma.unsqueeze(3).repeat(1, 1, 1, 16, 1)  # [1, 256, 16, 16, 3]
+            learned_sigma = learned_sigma.view(-1, 256, 256, 3)
 
             """ loss2 """
             # loss_dict2 = transport.training_losses(model2, x, model_kwargs)
-            loss_dict2 = transport.training_losses_learnable_eps(model2, x, model_kwargs, learned_mu, learned_sigma) # for learnable eps
+            loss_dict2 = transport.training_losses_learnable_eps(model2, x, model_kwargs, learned_mu=learned_mu, learned_sigma=learned_sigma) # for learnable eps
 
             if 'cos_loss' in loss_dict2:
                 mse_loss = loss_dict2["loss"].mean()
@@ -335,9 +355,12 @@ def do_train(train_config, accelerator):
 
             # Log loss values:
             if 'cos_loss' in loss_dict2:
-                running_loss += mse_loss.item()
+                running_loss2 += mse_loss.item()
             else:
-                running_loss += loss2.item()
+                running_loss2 += loss2.item()
+            running_loss1_ae += loss1_ae.item()
+            running_loss1_disc += loss1_disc.item()
+
             log_steps += 1
             train_steps += 1
             if train_steps % train_config['train']['log_every'] == 0:
@@ -346,15 +369,30 @@ def do_train(train_config, accelerator):
                 end_time = time()
                 steps_per_sec = log_steps / (end_time - start_time)
                 # Reduce loss history over all processes:
-                avg_loss = torch.tensor(running_loss / log_steps, device=device)
-                dist.all_reduce(avg_loss, op=dist.ReduceOp.SUM)
-                avg_loss = avg_loss.item() / dist.get_world_size()
+                '''loss2'''
+                avg_loss2 = torch.tensor(running_loss2 / log_steps, device=device)
+                dist.all_reduce(avg_loss2, op=dist.ReduceOp.SUM)
+                avg_loss2 = avg_loss2.item() / dist.get_world_size()
+                '''loss1_ae'''
+                avg_loss1_ae = torch.tensor(running_loss1_ae / log_steps, device=device)
+                dist.all_reduce(avg_loss1_ae, op=dist.ReduceOp.SUM)
+                avg_loss1_ae = avg_loss1_ae.item() / dist.get_world_size()
+                '''loss1_disc'''
+                avg_loss1_disc = torch.tensor(running_loss1_disc / log_steps, device=device)
+                dist.all_reduce(avg_loss1_disc, op=dist.ReduceOp.SUM)
+                avg_loss1_disc = avg_loss1_disc.item() / dist.get_world_size()
+
                 if accelerator.is_main_process:
                     logger.info(
-                        f"(step={train_steps:07d}) Train Loss: {avg_loss:.4f}, Train Steps/Sec: {steps_per_sec:.2f}")
-                    writer.add_scalar('Loss/train', avg_loss, train_steps)
+                        f"(step={train_steps:07d}) Loss2: {avg_loss2:.4f}, Loss1_ae: {avg_loss1_ae:.4f}, Loss1_disc: {avg_loss1_disc:.4f}, Train Steps/Sec: {steps_per_sec:.2f}")
+                    writer.add_scalar('Loss2/train', avg_loss2, train_steps)
+                    writer.add_scalar('Loss1_ae/train', avg_loss1_ae, train_steps)
+                    writer.add_scalar('Loss1_disc/train', avg_loss1_disc, train_steps)
+
                 # Reset monitoring variables:
-                running_loss = 0
+                running_loss2 = 0
+                running_loss1_ae = 0
+                running_loss1_disc = 0
                 log_steps = 0
                 start_time = time()
 

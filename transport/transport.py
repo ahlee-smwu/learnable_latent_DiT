@@ -167,14 +167,14 @@ class Transport:
         t = t.to(x1)
         return t, x0, x1
 
-    def sample_learnable_eps(self, x1, sp_timesteps=None, shifted_mu=0, learned_mu=0, learned_sigma=1):
+    def sample_learnable_eps(self, x1, sp_timesteps=None, shifted_mu=0, learned_mu=None, learned_sigma=None):
         """Sampling x0 & t based on shape of x1 (if needed)
           Args:
             x1 - data point; [batch, *dim]
         """
 
-        # x0 = th.randn_like(x1)
-        x0 = learned_mu + learned_sigma * th.randn_like(learned_mu) # x0, mu&sigma dim 맞춰야 함
+        # x0 = th.randn_like(x1) # original, normal gaussian
+        x0 = learned_mu + learned_sigma * th.randn_like(learned_mu) # x0, mu&sigma dim 맞춰야 함 # torch.Size([1, 32, 16, 16])
         # x0 = learned_mu + learned_sigma * th.randn_like(x1) # broadcast ver
 
         t0, t1 = self.check_interval(self.train_eps, self.sample_eps)  # t0: time 0, t1: time 1
@@ -263,8 +263,8 @@ class Transport:
             model_kwargs=None,
             sp_timesteps=None,
             shifted_mu=0,
-            learned_mu=0,
-            learned_sigma=1
+            learned_mu=None,
+            learned_sigma=None
     ):
         """Loss for training the score model
         Args:
@@ -276,8 +276,14 @@ class Transport:
             model_kwargs = {}
 
         t, x0, x1 = self.sample_learnable_eps(x1, sp_timesteps, shifted_mu, learned_mu, learned_sigma)  # x0 생성에서 eps가 작용함, 이걸 learnable eps로 바꿈
+        # x0: torch.Size([1, 256, 256, 3])
+        # x1: torch.Size([1, 256, 256, 3])
+        # t: torch.Size([1])
+
         t, xt, ut = self.path_sampler.plan(t, x0, x1)
         # t: time, xt: target of time t(=forward xt), ut: x0-x1, xt랑 관련없음
+        xt = xt.permute(0, 3, 1, 2) # reshape: main 코드에서 잘못해서 꼬인듯?해서 다시 해줌
+        ut = ut.permute(0, 3, 1, 2) # reshape: main 코드에서 잘못해서 꼬인듯?해서 다시 해줌
         model_output = model(xt, t, **model_kwargs)  # pred of model
         B, *_, C = xt.shape
         assert model_output.size() == (B, *xt.size()[1:-1], C)
