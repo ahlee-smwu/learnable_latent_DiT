@@ -412,6 +412,10 @@ class AutoencoderKL(pl.LightningModule):
     def training_step_eps(self, batch, batch_idx):
         inputs = self.get_input(batch, self.image_key)
         reconstructions, posterior, z, aux_feature = self(inputs)
+        # print("rec", reconstructions.shape)         # torch.Size([1, 3, 256, 256])
+        # print("post.mean", posterior.mean.shape)    # torch.Size([1, 3, 16, 16])
+        # print("z", z.shape)                         # torch.Size([1, 1024, 16, 16])
+        # print("aux", aux_feature.shape)             # torch.Size([1, 1024, 16, 16])
 
         # if optimizer_idx == 0:
         # train encoder+decoder+logvar
