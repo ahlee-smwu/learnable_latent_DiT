@@ -7,3 +7,5 @@ pretrained_weight
 vavae/logs
 learnable_eps/tensorboard_logs
 logs
+*.pyc
+__pycache__/
