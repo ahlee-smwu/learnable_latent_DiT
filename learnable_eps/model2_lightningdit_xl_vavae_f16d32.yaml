@@ -1,5 +1,5 @@
 # we recommend to read config_details.yaml first.
-
+# test line #
 
 ckpt_path: '../pretrained_weight/lightningdit-xl-imagenet256-64ep.pt' # <---- download our pre-trained lightningdit or your own checkpoint
 
@@ -50,7 +50,7 @@ train:
 optimizer:
   lr: 0.0002
   beta2: 0.95
-  #
+
 # recommend to use default settings
 transport:
   path_type: Linear
