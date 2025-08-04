@@ -50,7 +50,7 @@ train:
 optimizer:
   lr: 0.0002
   beta2: 0.95
-  
+  #
 # recommend to use default settings
 transport:
   path_type: Linear
