@@ -2,6 +2,7 @@
 
 
 ckpt_path: 'pretrained_weight/lightningdit-xl-imagenet256-64ep.pt' # <---- download our pre-trained lightningdit or your own checkpoint
+#ckpt_path: 'learnable_eps/output/lightningdit_xl_vavae_f16d32/checkpoints/0006000'
 
 data:
   data_path: "/mnt/HDD2/dataset/imagenet_latents/imagenet256-latents-vave-f16d32-dinov2/splits/imagenet_train_256"

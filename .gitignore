@@ -1,6 +1,6 @@
 submit_*
 demo_img/*
-output/*
+**/output/*
 **/tensorboard_logs/
 *internal*
 pretrained_weight
