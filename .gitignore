@@ -1,7 +1,9 @@
 submit_*
 demo_img/*
-output/*
-tensorboard_logs
+**/output/*
+**/tensorboard_logs/
 *internal*
 pretrained_weight
 vavae/logs
+learnable_eps/tensorboard_logs
+logs

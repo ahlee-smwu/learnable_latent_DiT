@@ -398,10 +398,11 @@ class LightningDiT(nn.Module):
         """
 
         use_checkpoint = self.use_checkpoint
+        # print("########x1", x.shape) # 2,3,256,256
 
         x = self.x_embedder(x) + self.pos_embed  # (N, T, D), where T = H * W / patch_size ** 2
         t = self.t_embedder(t)                   # (N, D)
-        y = self.y_embedder(y, self.training)    # (N, D) # 존재하는 값인지 확인, 없어야 diffusion 적으로 말이 될 것 같은데
+        y = self.y_embedder(y, self.training)    # (N, D) # label conditioning
         c = t + y                                # (N, D)
 
         for block in self.blocks:
@@ -412,6 +413,7 @@ class LightningDiT(nn.Module):
 
         x = self.final_layer(x, c)                # (N, T, patch_size ** 2 * out_channels)
         x = self.unpatchify(x)                   # (N, out_channels, H, W)
+        # print("########x2", x.shape)
 
         if self.learn_sigma:
             x, _ = x.chunk(2, dim=1)
@@ -422,7 +424,7 @@ class LightningDiT(nn.Module):
         Forward pass of LightningDiT, but also batches the unconditional forward pass for classifier-free guidance.
         """
         # https://github.com/openai/glide-text2im/blob/main/notebooks/text2im.ipynb
-        half = x[: len(x) // 2]
+        half = x[: len(x) // 2] # for CFG, (1,c,h,w)
         combined = torch.cat([half, half], dim=0)
         model_out = self.forward(combined, t, y)
         # For exact reproducibility reasons, we apply classifier-free guidance on only
@@ -439,6 +441,7 @@ class LightningDiT(nn.Module):
                 half_eps = cond_eps
 
         eps = torch.cat([half_eps, half_eps], dim=0)
+        print('#########forward output:', torch.cat([eps, rest], dim=1).shape)
         return torch.cat([eps, rest], dim=1)
 
 def get_2d_sincos_pos_embed(embed_dim, grid_size, cls_token=False, extra_tokens=0):
