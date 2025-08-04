@@ -105,7 +105,8 @@ class ode:
         self.sampler_type = sampler_type
 
     def sample(self, x, model, **model_kwargs):
-        
+
+        # print('#########x', x.shape)
         device = x[0].device if isinstance(x, tuple) else x.device
         def _fn(t, x):
             t = th.ones(x[0].size(0)).to(device) * t if isinstance(x, tuple) else th.ones(x.size(0)).to(device) * t
@@ -123,4 +124,5 @@ class ode:
             atol=atol,
             rtol=rtol
         )
+        # print("#########samples_inte", samples.shape) # num_sampling_steps,2,c,h,w)
         return samples

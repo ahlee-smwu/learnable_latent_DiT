@@ -16,6 +16,7 @@ from PIL import Image
 from omegaconf import OmegaConf
 from torchvision import transforms
 from tokenizer.autoencoder import AutoencoderKL
+import os
 
 class VA_VAE:
     """Vision Foundation Model Aligned VAE Implementation"""
@@ -27,10 +28,22 @@ class VA_VAE:
         """
         self.config = OmegaConf.load(config)
         self.embed_dim = self.config.model.params.embed_dim
-        self.ckpt_path = self.config.ckpt_path
+        self.ckpt_path = self._resolve_ckpt_path()
         self.img_size = img_size
         self.horizon_flip = horizon_flip
         self.load()
+
+    def _resolve_ckpt_path(self):
+        # use path from config (if it has only one path)
+        if isinstance(self.config.ckpt_path, str):
+            return self.config.ckpt_path
+        # find path from config options
+        for path in self.config.ckpt_path:
+            if os.path.exists(path):
+                print(f"[INFO] Using checkpoint path: {path}")
+                return path
+
+        raise FileNotFoundError("No valid checkpoint path found in config.ckpt_paths")
 
     def load(self):
         """Load and initialize VAE model"""
