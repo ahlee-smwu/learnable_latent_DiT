@@ -1,4 +1,6 @@
-ckpt_path: "pretrained_weight/vavae-imagenet256-f16d32-dinov2.pt" #/path/to/checkpoint.pt
+ckpt_path: #/path/to/checkpoint.pt
+  - "pretrained_weight/vavae-imagenet256-f16d32-dinov2.pt"  # run in root directory
+  - "../pretrained_weight/vavae-imagenet256-f16d32-dinov2.pt" # run in learnable_eps directory
 
 model:
   base_learning_rate: 1.0e-04

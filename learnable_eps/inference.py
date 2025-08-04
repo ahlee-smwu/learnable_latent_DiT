@@ -5,6 +5,13 @@ by Maple (Jingfeng Yao) from HUST-VL
 """
 
 import os, math, json, pickle, logging, argparse, yaml, torch, numpy as np
+import sys
+# 절대경로로 vavae/DiT 폴더를 sys.path에 추가
+vavae_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'vavae'))
+DiT_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+sys.path.append(vavae_path)
+sys.path.append(DiT_path)
+print(DiT_path)
 from time import time, strftime
 from glob import glob
 from copy import deepcopy
@@ -117,7 +124,7 @@ def do_sample(train_config, accelerator, ckpt_path=None, cfg_scale=None, model=N
     
     if vae is None:
         vae = VA_VAE(
-            f'tokenizer/configs/{train_config["vae"]["model_name"]}.yaml',
+            f'../tokenizer/configs/{train_config["vae"]["model_name"]}.yaml',
         )
         if accelerator.process_index == 0:
             print_with_prefix('Loaded VAE model')
@@ -165,24 +172,33 @@ def do_sample(train_config, accelerator, ckpt_path=None, cfg_scale=None, model=N
     latent_mean = latent_mean.clone().detach().to(device)
     latent_std = latent_std.clone().detach().to(device)
 
-
+    image_size = train_config['data']['image_size']
     if demo_sample_mode:
         if accelerator.process_index == 0:
-            images = []
-            for label in tqdm([975, 3, 207, 387, 388, 88, 979, 279], desc="Generating Demo Samples"): # fix the label for gen
-                z = torch.randn(1, model.in_channels, latent_size, latent_size, device=device)
+            image_list = []
+            os.makedirs('demo_images', exist_ok=True)
+            for label in tqdm([975, 3, 207, 387, 388, 88, 979, 279], desc="Generating Demo Samples"): # fix the label for gen, label conditioning
+                z = torch.randn(1, model.in_channels, image_size, image_size, device=device)
                 y = torch.tensor([label], device=device)
                 z = torch.cat([z, z], 0)
                 y_null = torch.tensor([1000] * 1, device=device)
                 y = torch.cat([y, y_null], 0)
                 model_kwargs = dict(y=y, cfg_scale=cfg_scale, cfg_interval=False, cfg_interval_start=cfg_interval_start)
                 model_fn = model.forward_with_cfg
-                samples = sample_fn(z, model_fn, **model_kwargs)[-1]
-                samples = (samples * latent_std) / latent_multiplier + latent_mean
-                samples = vae.decode_to_images(samples)
-                images.append(samples)
+                print_with_prefix('Ready for sampling')
+                samples = sample_fn(z, model_fn, **model_kwargs)[-1] # condition y가 dim=1에 추가되어 2배인 상태
+                samples = samples[:samples.shape[1] // 2]        # condition 차원 없앰
+                # samples = (samples * latent_std) / latent_multiplier + latent_mean # 없어도 되나,,, shape 안 맞아서 뺏어
+                # samples = vae.decode_to_images(samples) # do not need to decode, already image not latent
+                print('#########samples', samples.shape)
+                # shape: b,c,h,w
+                images = torch.clamp(127.5 * samples + 128.0, 0, 255).permute(0, 2, 3, 1).to("cpu",dtype=torch.uint8).numpy()
+                # shape: b,h,w,c
+                image = images[0]
+                Image.fromarray(image).save(f'demo_images/demo_sample_eps_{label}.png')
+                print_with_prefix('One sampling completion')
+                image_list.append(images)
             # Combine 8 images into a 2x4 grid
-            os.makedirs('demo_images', exist_ok=True)
             # Stack all images into a large numpy array
             all_images = np.stack([img[0] for img in images])  # Take first image from each batch            
             # Rearrange into 2x4 grid
@@ -193,13 +209,13 @@ def do_sample(train_config, accelerator, ckpt_path=None, cfg_scale=None, model=N
                 grid[i*h:(i+1)*h, j*w:(j+1)*w] = image
                 
             # Save the combined image
-            Image.fromarray(grid).save('demo_images/demo_samples_org.png')
+            Image.fromarray(grid).save('demo_images/demo_samples_eps.png')
 
             return None
     else:
         for i in pbar:
             # Sample inputs:
-            z = torch.randn(n, model.in_channels, latent_size, latent_size, device=device)
+            z = torch.randn(n, model.in_channels, image_size, image_size, device=device)
             y = torch.randint(0, train_config['data']['num_classes'], (n,), device=device)
             
             # Setup classifier-free guidance:
@@ -214,11 +230,17 @@ def do_sample(train_config, accelerator, ckpt_path=None, cfg_scale=None, model=N
                 model_fn = model.forward
 
             samples = sample_fn(z, model_fn, **model_kwargs)[-1]
+            # print('#########samples', samples.shape) # torch.Size([1, 3, 256, 256])
+
             if using_cfg:
                 samples, _ = samples.chunk(2, dim=0)  # Remove null class samples
 
-            samples = (samples * latent_std) / latent_multiplier + latent_mean
-            samples = vae.decode_to_images(samples)
+            # print(samples) # -1~1 normalized, 범위를 넘는 것도 있는데? step이 커지면서 맞춰지는 건가
+            samples = torch.clamp((samples + 1.0) * 127.5, 0, 255).permute(0, 2, 3, 1).to("cpu",
+                                                                                         dtype=torch.uint8).numpy()
+            # print(samples)
+            # samples = (samples * latent_std) / latent_multiplier + latent_mean
+            # samples = vae.decode_to_images(samples)
 
             # Save samples to disk as individual .png files
             for i, sample in enumerate(samples):
@@ -263,7 +285,7 @@ if __name__ == "__main__":
 
     # get model
     model = LightningDiT_models[train_config['model']['model_type']](
-        input_size=latent_size,
+        input_size=train_config['data']['image_size'], # latent x, direct image data
         num_classes=train_config['data']['num_classes'],
         use_qknorm=train_config['model']['use_qknorm'],
         use_swiglu=train_config['model']['use_swiglu'] if 'use_swiglu' in train_config['model'] else False,
@@ -274,6 +296,7 @@ if __name__ == "__main__":
         learn_sigma=train_config['model']['learn_sigma'] if 'learn_sigma' in train_config['model'] else False,
     )
 
+    print()
     # naive sample
     sample_folder_dir = do_sample(train_config, accelerator, ckpt_path=ckpt_dir, model=model, demo_sample_mode=args.demo)
     
