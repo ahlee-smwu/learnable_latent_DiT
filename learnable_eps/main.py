@@ -61,6 +61,8 @@ from ldm.data.base import Txt2ImgIterableBaseDataset
 from ldm.util import instantiate_from_config
 from train import DataModuleFromConfig
 
+from torchvision.datasets import ImageFolder
+from torchvision import transforms
 
 def do_train(train_config, accelerator):
     """
@@ -165,7 +167,8 @@ def do_train(train_config, accelerator):
     param1_ae = (list(model1.encoder.parameters()) +
                  list(model1.decoder.parameters()) +
                  list(model1.quant_conv.parameters()) +
-                 list(model1.post_quant_conv.parameters()))
+                 list(model1.post_quant_conv.parameters()) +
+                 list(model1.linear_proj.parameters())) # 첫실험에 빠져있어서 추가함
     param1_disc = model1.loss.discriminator.parameters()
 
     # optimizer
@@ -173,13 +176,15 @@ def do_train(train_config, accelerator):
         param1_ae + list(model2.parameters()),
         lr=train_config['optimizer']['lr'], #0.0002
         weight_decay=0,
-        betas=(0.9, train_config['optimizer']['beta2'])
+        # betas=(0.5, 0.9) # model1(VA-VAE) setting
+        betas=(0.9, train_config['optimizer']['beta2']) # model2(diffusion) setting
     )
     opt_disc = torch.optim.Adam(
         param1_disc,
-        lr=train_config['optimizer']['lr'], # 0.0001
+        lr=model1_config_merged.model.base_learning_rate, # 0.0001
         weight_decay=0,
-        betas=(0.9, train_config['optimizer']['beta2']) # 0.5, 0.9
+        betas=(0.5, 0.9)  # model1(VA-VAE) setting
+        # betas=(0.9, train_config['optimizer']['beta2']) # model2(diffusion) setting
     )
 
     '''data for DiT(model2)'''
@@ -190,49 +195,68 @@ def do_train(train_config, accelerator):
     #         'data'] else 0.18215,
     # )
     '''data for VA-VAE(model1)'''
-    data = instantiate_from_config(model1_config_merged.data)
-    # NOTE according to https://pytorch-lightning.readthedocs.io/en/latest/datamodules.html
-    # calling these ourselves should not be necessary but it is.
-    # lightning still takes care of proper multiprocessing though
-    data.prepare_data()
-    data.setup()
-    print("#### Data #####")
-    for k in data.datasets:
-        print(f"{k}, {data.datasets[k].__class__.__name__}, {len(data.datasets[k])}")
+    # data = instantiate_from_config(model1_config_merged.data)
+    # # NOTE according to https://pytorch-lightning.readthedocs.io/en/latest/datamodules.html
+    # # calling these ourselves should not be necessary but it is.
+    # # lightning still takes care of proper multiprocessing though
+    # data.prepare_data()
+    # data.setup()
+    #
+    # train_dataset = data.datasets["train"]
+    # loader1 = DataLoader(
+    #     train_dataset,
+    #     batch_size=data.batch_size,
+    #     shuffle=True,
+    #     num_workers=data.num_workers,
+    #     pin_memory=True,
+    #     drop_last=True,
+    # )
+    # val_dataset = data.datasets["validation"]
+    # val_loader1 = DataLoader(
+    #     val_dataset,
+    #     batch_size=data.batch_size,
+    #     shuffle=True,
+    #     num_workers=data.num_workers,
+    #     pin_memory=True,
+    #     drop_last=True,
+    # )
+    # print("#### Data #####")
+    # for k in data.datasets:
+    #     print(f"{k}, {data.datasets[k].__class__.__name__}, {len(data.datasets[k])}")
 
-    train_dataset = data.datasets["train"]
+    '''data for light dataset: Tiny-ImageNet'''
+    transform = transforms.Compose([
+        transforms.Resize((256, 256)),
+        transforms.ToTensor(),
+        transforms.Normalize(
+            mean=[0.5, 0.5, 0.5],
+            std=[0.5, 0.5, 0.5]
+        ) # norm to -1~1
+    ])
+    train_dataset = ImageFolder(root=model1_config_merged.data.params.train.params.data_root, transform=transform)
     loader1 = DataLoader(
         train_dataset,
-        batch_size=data.batch_size,
+        batch_size=model1_config_merged.data.params.batch_size,
         shuffle=True,
-        num_workers=data.num_workers,
+        num_workers=train_config['data']['num_workers'],
         pin_memory=True,
         drop_last=True,
     )
-    val_dataset = data.datasets["validation"]
+    val_dataset = ImageFolder(root=model1_config_merged.data.params.train.params.data_root, transform=transform)
     val_loader1 = DataLoader(
         val_dataset,
-        batch_size=data.batch_size,
+        batch_size=model1_config_merged.data.params.batch_size,
         shuffle=True,
-        num_workers=data.num_workers,
+        num_workers=train_config['data']['num_workers'],
         pin_memory=True,
         drop_last=True,
     )
 
     batch_size_per_gpu = int(np.round(train_config['train']['global_batch_size'] / accelerator.num_processes))
     global_batch_size = batch_size_per_gpu * accelerator.num_processes
-
-    # loader = DataLoader(
-    #     dataset,
-    #     batch_size=batch_size_per_gpu,
-    #     shuffle=True,
-    #     num_workers=train_config['data']['num_workers'],
-    #     pin_memory=True,
-    #     drop_last=True
-    # )
-    # if accelerator.is_main_process:
-    #     logger.info(f"Dataset contains {len(dataset):,} images {train_config['data']['data_path']}")
-    #     logger.info(f"Batch size {batch_size_per_gpu} per gpu, with {global_batch_size} global batch size")
+    if accelerator.is_main_process:
+        logger.info(f"Dataset contains {len(train_dataset):,} images {train_config['data']['data_path']}")
+        logger.info(f"Batch size {batch_size_per_gpu} per gpu, with {global_batch_size} global batch size")
 
     if 'valid_path' in train_config['data']:
         valid_dataset = ImgLatentDataset(
