@@ -3,5 +3,5 @@
   <component name="Black">
     <option name="sdkName" value="learnable_eps" />
   </component>
-  <component name="ProjectRootManager" version="2" project-jdk-name="learnable_eps" project-jdk-type="Python SDK" />
+  <component name="ProjectRootManager" version="2" project-jdk-name="leanable_eps" project-jdk-type="Python SDK" />
 </project>

@@ -3,8 +3,15 @@
   <component name="NewModuleRootManager">
     <content url="file://$MODULE_DIR$">
       <sourceFolder url="file://$MODULE_DIR$/vavae/taming-transformers" isTestSource="false" />
+      <excludeFolder url="file://$MODULE_DIR$/learnable_eps/output/lightningdit_xl_vavae_f16d32" />
+      <excludeFolder url="file://$MODULE_DIR$/learnable_eps/tensorboard_logs" />
+      <excludeFolder url="file://$MODULE_DIR$/logs" />
+      <excludeFolder url="file://$MODULE_DIR$/output/lightningdit_xl_vavae_f16d32" />
+      <excludeFolder url="file://$MODULE_DIR$/pretrained_weight" />
+      <excludeFolder url="file://$MODULE_DIR$/tensorboard_logs" />
+      <excludeFolder url="file://$MODULE_DIR$/vavae/logs" />
     </content>
-    <orderEntry type="jdk" jdkName="learnable_eps" jdkType="Python SDK" />
+    <orderEntry type="jdk" jdkName="leanable_eps" jdkType="Python SDK" />
     <orderEntry type="sourceFolder" forTests="false" />
   </component>
   <component name="PyDocumentationSettings">
