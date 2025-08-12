@@ -31,7 +31,7 @@ def get_dinov2_encoder_learnable_eps():
     """
     Load the DINOv2 pretrained ViT-L encoder from the timm library.
     """
-    model = timm.create_model("hf-hub:timm/vit_base_patch14_dinov2.lvd142m", pretrained=True, dynamic_img_size=True)
+    model = timm.create_model("hf-hub:timm/vit_large_patch14_dinov2.lvd142m", pretrained=True, dynamic_img_size=True)
     # ['vit_base_patch14_dinov2', 'vit_base_patch14_reg4_dinov2', 'vit_giant_patch14_dinov2', 'vit_giant_patch14_reg4_dinov2', 'vit_large_patch14_dinov2', 'vit_large_patch14_reg4_dinov2', 'vit_small_patch14_dinov2', 'vit_small_patch14_reg4_dinov2']
     model.requires_grad_(False)
     return model
@@ -46,7 +46,7 @@ def create_foundation_model(
     elif type == 'dinov2':
         return get_dinov2_encoder(), 1024
     elif type == 'dinov2_small':
-        return get_dinov2_encoder_learnable_eps(), 1024
+        return get_dinov2_encoder_learnable_eps(), 768
 
 class aux_foundation_model(nn.Module):
     """
@@ -66,9 +66,11 @@ class aux_foundation_model(nn.Module):
     def forward_dinov2(self, x):
         b, c, h, w = x.shape
         x = nn.functional.interpolate(x, size=(224, 224), mode='bilinear', align_corners=False)
+        # forward output: (b, N+1, d), N: patch, 1: cls token # torch.Size([1, 257, 768])
+
+        # print("###########DINO", self.model.forward_features(x)[:, 1:].reshape(b, h//16, w//16, -1))
         return self.model.forward_features(x)[:, 1:].reshape(b, h//16, w//16, -1).permute(0, 3, 1, 2) # 224 size, 14 patch=> //16
-            # forward output: (b, N+1, d), N: patch, 1: cls token
-        
+
     def forward(self, x):
         with torch.no_grad():
             if self.type == 'mae':

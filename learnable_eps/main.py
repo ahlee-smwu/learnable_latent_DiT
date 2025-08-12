@@ -320,10 +320,17 @@ def do_train(train_config, accelerator):
 
     while True:
         for batch in loader:
-            x = batch['image']
-            y = batch['class_label']
-            # print(batch.keys())
-                # dict_keys(['image', 'relpath', 'synsets', 'class_label', 'human_label', 'file_path_'])
+            if hasattr(batch, '__getitem__') and 'image' in batch:
+                # print(batch.keys())
+                     # dict_keys(['image', 'relpath', 'synsets', 'class_label', 'human_label', 'file_path_'])
+                x = batch['image']          # x: torch.Size([1, 256, 256, 3])
+                y = batch['class_label']
+            else:
+                x = batch[0]                # x: torch.Size([1, 3, 256, 256])
+                x = x.permute(0, 2, 3, 1)   # x: torch.Size([1, 256, 256, 3])
+                y = batch[1]
+                batch = {'image': x, 'class_label':y}
+
 
             if accelerator.mixed_precision == 'no':
                 x = x.to(device, dtype=torch.float32)
@@ -332,7 +339,6 @@ def do_train(train_config, accelerator):
                 x = x.to(device)
                 y = y.to(device)
             model_kwargs = dict(y=y)
-                # x: torch.Size([1, 256, 256, 3])
 
             """ loss1 """
             loss1_ae, loss1_disc, posterior = model1.module.training_step_eps(batch, batch_idx=None)

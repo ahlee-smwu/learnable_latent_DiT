@@ -305,6 +305,7 @@ class AutoencoderKL(pl.LightningModule):
         assert ddconfig["double_z"]
         self.quant_conv = torch.nn.Conv2d(2*ddconfig["z_channels"], 2*embed_dim, 1)
         self.post_quant_conv = torch.nn.Conv2d(embed_dim, ddconfig["z_channels"], 1)
+        self.new_proj_dec = torch.nn.Conv2d(3, 32, 1) # new layer for eps
         self.embed_dim = embed_dim
         if colorize_nlabels is not None:
             assert type(colorize_nlabels)==int
@@ -318,8 +319,8 @@ class AutoencoderKL(pl.LightningModule):
             from ldm.models.foundation_models import aux_foundation_model
             print(f"Using {use_vf} as auxiliary feature.")
             self.foundation_model = aux_foundation_model(use_vf)
-            vf_feature_dim = self.foundation_model.feature_dim
-            self.linear_proj = torch.nn.Conv2d(vf_feature_dim, embed_dim, kernel_size=1, bias=True)
+            vf_feature_dim = self.foundation_model.feature_dim # 768? 1024?
+            self.linear_proj = torch.nn.Conv2d(vf_feature_dim, embed_dim, kernel_size=1, bias=True) # vf dim을 vae dim 으로
             if reverse_proj:
                 self.linear_proj = torch.nn.Conv2d(embed_dim, vf_feature_dim, kernel_size=1, bias=False)
         else:
@@ -347,6 +348,11 @@ class AutoencoderKL(pl.LightningModule):
     
     def decode(self, z):
         z = self.post_quant_conv(z)
+        dec = self.decoder(z)
+        return dec
+    
+    def decode_eps(self, z):
+        z = self.new_proj_dec(z)  # new layer
         dec = self.decoder(z)
         return dec
 
@@ -409,7 +415,7 @@ class AutoencoderKL(pl.LightningModule):
         self.manual_backward(discloss)
         disc_opt.step()
 
-    def training_step_eps(self, batch, batch_idx):
+    def training_step_eps(self, batch, batch_idx): # do not backward, return loss
         inputs = self.get_input(batch, self.image_key)
         reconstructions, posterior, z, aux_feature = self(inputs)
         # print("rec", reconstructions.shape)         # torch.Size([1, 3, 256, 256])
@@ -486,6 +492,23 @@ class AutoencoderKL(pl.LightningModule):
                 x = self.to_rgb(x)
                 xrec = self.to_rgb(xrec)
             log["samples"] = self.decode(torch.randn_like(posterior.sample()))
+            log["reconstructions"] = xrec
+        log["inputs"] = x
+        return log
+
+    @torch.no_grad()
+    def log_images_eps(self, batch, only_inputs=False, **kwargs):
+        log = dict()
+        x = self.get_input(batch, self.image_key)
+        x = x.to(self.device)
+        if not only_inputs:
+            xrec, posterior, z, aux_features = self(x)
+            if x.shape[1] > 3:
+                # colorize with random projection
+                assert xrec.shape[1] > 3
+                x = self.to_rgb(x)
+                xrec = self.to_rgb(xrec)
+            log["samples"] = self.decode_eps(torch.randn_like(posterior.sample()))
             log["reconstructions"] = xrec
         log["inputs"] = x
         return log

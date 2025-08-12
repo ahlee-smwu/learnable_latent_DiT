@@ -1,3 +1,4 @@
+#!/bin/bash
 CONFIG_PATH=$1
 
 PRECISION=${PRECISION:-bf16}

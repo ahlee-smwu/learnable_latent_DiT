@@ -1,4 +1,4 @@
-ckpt_path: /path/to/ckpt # used for testing only, add your ckpt path if you want to test the model
+ckpt_path: "../pretrained_weight/vavae-imagenet256-f16d32-dinov2.pt" # used for testing only, add your ckpt path if you want to test the model
 # weight_init: /path/to/weight_init # if you want to finetune va-vae on your own dataset, add your weight_init path
 
 model:
@@ -45,7 +45,7 @@ model:
 data:
   target: main.DataModuleFromConfig
   params:
-    batch_size: 2 #8 # batch size per GPU
+    batch_size: 8 # batch size per GPU
     wrap: true
     train:
       target: ldm.data.imagenet.ImageNetTrain

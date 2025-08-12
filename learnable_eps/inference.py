@@ -93,7 +93,7 @@ def do_sample(train_config, accelerator, ckpt_path=None, cfg_scale=None, model=N
     latent_size = train_config['data']['image_size'] // downsample_ratio
 
     checkpoint = torch.load(ckpt_path, map_location=lambda storage, loc: storage)
-    if "ema" in checkpoint:  # supports checkpoints from train.py
+    if "ema" in checkpoint:  # supports checkpoints from main.py
         checkpoint = checkpoint["ema"]
     model.load_state_dict(checkpoint)
     model.eval()  # important!
