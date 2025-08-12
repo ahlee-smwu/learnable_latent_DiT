@@ -50,19 +50,21 @@ data:
     train:
       target: ldm.data.imagenet.ImageNetTrain
       params:
-#        data_root: /mnt/HDD2/dataset/imagenet #d26
+#        data_root: /mnt/HDD2/dataset/imagenet # d26
 #        data_root: /mnt/SSD_raid1/imagenet/ # navi
-        data_root: /mnt/HDD2/dataset/cifar-100/train # d26
+#        data_root: /mnt/HDD2/dataset/cifar-100/train # d26
+        data_root: /mnt/SSD_raid1/tiny-imagenet-200/train # navi
     validation:
       target: ldm.data.imagenet.ImageNetValidation
       params:
-#        data_root: /mnt/HDD2/dataset/imagenet #d26
+#        data_root: /mnt/HDD2/dataset/imagenet # d26
 #        data_root: /mnt/SSD_raid1/imagenet/ # navi
-        data_root: /mnt/HDD2/dataset/cifar-100/val # d26
+#        data_root: /mnt/HDD2/dataset/cifar-100/val # d26
+        data_root: /mnt/SSD_raid1/tiny-imagenet-200/val # navi
 
 lightning:
   trainer:
-    devices: 1 #8 # number of GPUs, modify it according to your settings
+    devices: 4 #8 # number of GPUs, modify it according to your settings
     num_nodes: 1 #4 # number of nodes, modify it according to your settings # number of machines
     strategy: ddp_find_unused_parameters_true
     accelerator: gpu

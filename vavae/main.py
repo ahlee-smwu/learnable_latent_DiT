@@ -36,6 +36,7 @@ from pytorch_lightning.utilities import rank_zero_only
 from ldm.data.base import Txt2ImgIterableBaseDataset
 from ldm.util import instantiate_from_config
 
+CUDA_VISIBLE_DEVICES=0,1,2,3
 
 def get_parser(**parser_kwargs):
     def str2bool(v):
@@ -405,24 +406,58 @@ class ImageLogger(Callback):
             if is_train:
                 pl_module.train()
 
+    def log_img_eps(self, pl_module, batch, batch_idx, split="train"):
+        check_idx = batch_idx if self.log_on_batch_idx else pl_module.global_step
+        if (self.check_frequency(check_idx) and  # batch_idx % self.batch_freq == 0
+                hasattr(pl_module, "log_images") and
+                callable(pl_module.log_images) and
+                self.max_images > 0):
+            logger = type(pl_module.logger)
+
+            is_train = pl_module.training
+            if is_train:
+                pl_module.eval()
+
+            with torch.no_grad():
+                images = pl_module.log_images_eps(batch, split=split, **self.log_images_kwargs)
+
+            for k in images:
+                N = min(images[k].shape[0], self.max_images)
+                images[k] = images[k][:N]
+                if isinstance(images[k], torch.Tensor):
+                    images[k] = images[k].detach().cpu()
+                    if self.clamp:
+                        images[k] = torch.clamp(images[k], -1., 1.)
+
+            self.log_local(pl_module.logger.save_dir, split, images,
+                           pl_module.global_step, pl_module.current_epoch, batch_idx)
+
+            logger_log_images = self.logger_log_images.get(logger, lambda *args, **kwargs: None)
+            logger_log_images(pl_module, images, pl_module.global_step, split)
+
+            if is_train:
+                pl_module.train()
+
     def check_frequency(self, check_idx):
         if ((check_idx % self.batch_freq) == 0 or (check_idx in self.log_steps)) and (
                 check_idx > 0 or self.log_first_step):
             try:
                 self.log_steps.pop(0)
             except IndexError as e:
-                print(e)
+                # print(e) # pop from empty list
                 pass
             return True
         return False
 
     def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx=0):
         if not self.disabled and (pl_module.global_step > 0 or self.log_first_step):
-            self.log_img(pl_module, batch, batch_idx, split="train")
+            # self.log_img(pl_module, batch, batch_idx, split="train")
+            self.log_img_eps(pl_module, batch, batch_idx, split="train") # for learnable eps
 
     def on_validation_batch_end(self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx=0):
         if not self.disabled and pl_module.global_step > 0:
-            self.log_img(pl_module, batch, batch_idx, split="val")
+            # self.log_img(pl_module, batch, batch_idx, split="val")
+            self.log_img_eps(pl_module, batch, batch_idx, split="val")  # for learnable eps
         if hasattr(pl_module, 'calibrate_grad_norm'):
             if (pl_module.calibrate_grad_norm and batch_idx % 25 == 0) and batch_idx > 0:
                 self.log_gradients(trainer, pl_module, batch_idx=batch_idx)
@@ -496,7 +531,7 @@ if __name__ == "__main__":
     now = datetime.datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
 
     # add cwd for convenience and to make classes in this file available when
-    # running as `python train.py`
+    # running as `python main.py`
     # (in particular `main.DataModuleFromConfig`)
     sys.path.append(os.getcwd())
 
@@ -504,12 +539,14 @@ if __name__ == "__main__":
     # parser = Trainer.add_argparse_args(parser)
 
     opt, unknown = parser.parse_known_args()
+    print('###opt',vars(opt))
+        # opt {'name': '', 'resume': '', 'base': ['configs/f16d32_vfdinov2.yaml'], 'train': True, 'no_test': False, 'project': None, 'debug': False, 'seed': 23, 'postfix': '', 'logdir': 'logs', 'scale_lr': True}
     cfg_fname = os.path.split(opt.base[0])[-1]
     cfg_name = os.path.splitext(cfg_fname)[0]
     name = "_" + cfg_name
     nowname = now + name + opt.postfix
-    # logdir = os.path.join(opt.logdir, nowname)
-    logdir = os.path.join(opt.logdir, cfg_name)
+    logdir = os.path.join(opt.logdir, nowname) # 이걸로 바꿔봄
+    # logdir = os.path.join(opt.logdir, cfg_name)
 
     # auto resume from the latest checkpoint
     ckptdir = os.path.join(logdir, "checkpoints")
@@ -517,7 +554,7 @@ if __name__ == "__main__":
     seed_everything(opt.seed)
     print(f"logdir: {logdir}")
 
-    print(f"Try to resume from {logdir}")
+    print(f"Try to resume from {logdir}") # 체크포인트 쓰려면 logdir 원래대로 바꿔야 함, now x
     ckpt_files = glob.glob(os.path.join(logdir, "checkpoints", "epoch=*.ckpt"))
     if not ckpt_files:
         print(f"Warning: No checkpoint files found in {os.path.join(logdir, 'checkpoints')}, training from scratch")
@@ -544,19 +581,89 @@ if __name__ == "__main__":
         # model
         model = instantiate_from_config(config.model)
         total_params = sum(p.numel() for p in model.parameters())
-        print(f"전체 파라미터 수: {total_params}")             # 391718245
+        print(f"Total params: {total_params}")             # 391718245
         trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-        print(f"학습 가능한 파라미터 수: {trainable_params}")    # 72634469(72M)
-        for name, param in model.named_parameters():
-            # print(f"{name}: {param.numel()} params, requires_grad={param.requires_grad}")
-            pass
+        print(f"Trainable params: {trainable_params}")    # 72634469(72M)
 
         # if config.init_weight is not None, load the weights
         try:
-            print(f"Loading initial weights from {config.init_weight}")
-            model.load_state_dict(torch.load(config.init_weight)['state_dict'], strict=False)
+            weight_path = "../pretrained_weight/vavae-imagenet256-f16d32-dinov2.pt"
+            # print(f"Loading initial weights from {config.init_weight}")
+            # model.load_state_dict(torch.load(config.init_weight)['state_dict'], strict=False)
+            # print(ckpt.keys())
+            model.load_state_dict(torch.load(weight_path)['state_dict'], strict=False)
+            print(f"Loaded initial weights from {weight_path}")
+
         except:
             print(f"There is no initial weights to load.")
+
+        before_weights = {name: param.clone().detach() for name, param in model.named_parameters()}
+
+        """ Model layer tunning """
+        # for name, param in model.named_parameters():
+        #     print(f"{name}: {param.shape}")
+
+        model.new_proj_vae = torch.nn.Conv2d(32 * 2, 3 * 2, kernel_size=1, bias=True)  # vae output dim: 32->3
+        model.new_proj_algin1 = torch.nn.Conv2d(3, 64, kernel_size=1, bias=False)  # vf dim -> vae dim
+        model.new_proj_algin2 = torch.nn.Conv2d(64, 1024, kernel_size=1, bias=False)  # vf dim -> vae dim
+        model.new_proj_align = torch.nn.Sequential(
+            model.new_proj_algin1,
+            model.new_proj_algin2
+        )
+
+        def new_forward(self, input, sample_posterior=True):
+            '''encode'''
+            from ldm.modules.distributions.distributions import DiagonalGaussianDistribution
+            h = self.encoder(input)
+            moments = self.quant_conv(h)
+            moments = self.new_proj_vae(moments)  # new layer
+            posterior = DiagonalGaussianDistribution(moments)
+            # post: (B, D*2(mean, std)) D: latent dimension
+            '''sampling'''
+            if sample_posterior:
+                z = posterior.sample()
+            else:
+                z = posterior.mode()
+            '''decode'''
+            dec = self.decode_eps(z)
+            '''vf'''
+            if self.use_vf is not None:
+                aux_feature = self.foundation_model(input)
+                if not self.reverse_proj:
+                    aux_feature = self.new_proj_align(aux_feature)
+                else:
+                    z = self.new_proj_align(z)
+                return dec, posterior, z, aux_feature
+                # recon(=dec output), post(=enc output), sample of post, aux
+
+
+        import types
+        model.forward = types.MethodType(new_forward, model)
+
+        """ Model optimizer tunning """
+        def new_configure_optimizers(self):
+            lr = self.learning_rate
+            params = (list(self.encoder.parameters()) +
+                      list(self.decoder.parameters()) +
+                      list(self.quant_conv.parameters()) +
+                      list(self.new_proj_dec.parameters()) + # new layer
+                      list(self.new_proj_vae.parameters())) # new layer
+
+            if self.use_vf is not None and not self.proj_fix:
+                params += list(self.new_proj_align.parameters())
+
+            opt_ae = torch.optim.Adam(params, lr=lr, betas=(0.5, 0.9))
+
+            opt_disc = torch.optim.Adam(self.loss.discriminator.parameters(),
+                                        lr=lr, betas=(0.5, 0.9))
+
+            name_map = {id(param): name for name, param in model.named_parameters()}
+
+            return [opt_ae, opt_disc], []
+
+        import types
+        model.configure_optimizers = types.MethodType(new_configure_optimizers, model)
+
 
         # trainer and callbacks
         trainer_kwargs = dict()
@@ -694,6 +801,9 @@ if __name__ == "__main__":
         trainer = Trainer(**{k: v for k, v in vars(trainer_opt).items() if v is not None}, **trainer_kwargs)
         trainer.logdir = logdir  ###
 
+
+
+
         # data
         data = instantiate_from_config(config.data)
         # NOTE according to https://pytorch-lightning.readthedocs.io/en/latest/datamodules.html
@@ -733,6 +843,16 @@ if __name__ == "__main__":
             # run all checkpoint hooks
             if trainer.global_rank == 0:
                 print("Summoning checkpoint.")
+
+                # 새 레이어가 있는지 확인
+                module = trainer.model.module  # DDP 내부 모델
+                new_layers = [name for name, _ in module.named_modules() if "new_proj_align" in name]
+                print(f"새 레이어 목록: {new_layers}")
+
+                # 새 레이어 파라미터 키도 확인 (state_dict 기준)
+                state_keys = [k for k in module.state_dict().keys() if "new_proj_align" in k]
+                print(f"state_dict에 포함된 새 레이어 파라미터 키: {state_keys}")
+
                 ckpt_path = os.path.join(ckptdir, "last.ckpt")
                 trainer.save_checkpoint(ckpt_path)
 
@@ -750,6 +870,15 @@ if __name__ == "__main__":
 
         # run
         if opt.train:
+            checkpoint_callback = ModelCheckpoint(
+                dirpath= os.path.join(logdir, 'checkpoints/'),
+                filename='model-{step}',
+                every_n_train_steps= 1000,
+                save_top_k=-1,
+                verbose=True,
+            )
+            trainer.callbacks.append(checkpoint_callback)
+
             try:
                 try:
                     trainer.fit(model, data, ckpt_path=opt.resume_from_checkpoint)
@@ -777,5 +906,5 @@ if __name__ == "__main__":
             dst = os.path.join(dst, "debug_runs", name)
             os.makedirs(os.path.split(dst)[0], exist_ok=True)
             os.rename(logdir, dst)
-        if trainer.global_rank == 0:
+        if Trainer.global_rank == 0:
             print(trainer.profiler.summary())
