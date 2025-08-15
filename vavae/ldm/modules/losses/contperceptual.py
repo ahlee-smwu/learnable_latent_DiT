@@ -40,7 +40,7 @@ class LPIPSWithDiscriminator(nn.Module):
         self.cos_margin = cos_margin
         self.distmat_margin = distmat_margin
 
-    def calculate_adaptive_weight(self, nll_loss, g_loss, last_layer=None):
+    def calculate_adaptive_weight(self, nll_loss, g_loss, last_layer=None): # last_layer: decoder.conv_out.weight
         if last_layer is not None:
             nll_grads = torch.autograd.grad(nll_loss, last_layer, retain_graph=True)[0]
             g_grads = torch.autograd.grad(g_loss, last_layer, retain_graph=True)[0]
@@ -103,7 +103,7 @@ class LPIPSWithDiscriminator(nn.Module):
         # now the GAN part
         if optimizer_idx == 0:
             # generator update
-            if cond is None:
+            if cond is None: # here
                 assert not self.disc_conditional
                 logits_fake = self.discriminator(reconstructions.contiguous())
             else:

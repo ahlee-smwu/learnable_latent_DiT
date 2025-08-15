@@ -111,7 +111,7 @@ class ImageNetBase(Dataset):
             human_dict = f.read().splitlines()
             human_dict = dict(line.split(maxsplit=1) for line in human_dict)
 
-        self.human_labels = [human_dict.get(s, s) for s in self.synsets]
+        self.human_labels = [human_dict.get(s, s) for s in self.synsets] # modified for local imagenet, ahlee
         # if list has already human label, then pass
 
         labels = {

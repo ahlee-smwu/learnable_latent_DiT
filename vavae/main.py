@@ -35,8 +35,10 @@ from pytorch_lightning.utilities import rank_zero_only
 
 from ldm.data.base import Txt2ImgIterableBaseDataset
 from ldm.util import instantiate_from_config
-
-CUDA_VISIBLE_DEVICES=0,1,2,3
+#
+# local_rank = int(os.environ.get("LOCAL_RANK", 0))
+# torch.cuda.set_device(local_rank)
+# print(f"[Rank {os.environ.get('RANK','?')}] Using CUDA device {local_rank} (CUDA_VISIBLE_DEVICES={os.environ.get('CUDA_VISIBLE_DEVICES')})")
 
 def get_parser(**parser_kwargs):
     def str2bool(v):
@@ -410,7 +412,7 @@ class ImageLogger(Callback):
         check_idx = batch_idx if self.log_on_batch_idx else pl_module.global_step
         if (self.check_frequency(check_idx) and  # batch_idx % self.batch_freq == 0
                 hasattr(pl_module, "log_images") and
-                callable(pl_module.log_images) and
+                callable(pl_module.log_images_eps) and
                 self.max_images > 0):
             logger = type(pl_module.logger)
 
@@ -539,7 +541,7 @@ if __name__ == "__main__":
     # parser = Trainer.add_argparse_args(parser)
 
     opt, unknown = parser.parse_known_args()
-    print('###opt',vars(opt))
+    # print('###opt',vars(opt))
         # opt {'name': '', 'resume': '', 'base': ['configs/f16d32_vfdinov2.yaml'], 'train': True, 'no_test': False, 'project': None, 'debug': False, 'seed': 23, 'postfix': '', 'logdir': 'logs', 'scale_lr': True}
     cfg_fname = os.path.split(opt.base[0])[-1]
     cfg_name = os.path.splitext(cfg_fname)[0]
@@ -585,30 +587,16 @@ if __name__ == "__main__":
         trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
         print(f"Trainable params: {trainable_params}")    # 72634469(72M)
 
-        # if config.init_weight is not None, load the weights
-        try:
-            weight_path = "../pretrained_weight/vavae-imagenet256-f16d32-dinov2.pt"
-            # print(f"Loading initial weights from {config.init_weight}")
-            # model.load_state_dict(torch.load(config.init_weight)['state_dict'], strict=False)
-            # print(ckpt.keys())
-            model.load_state_dict(torch.load(weight_path)['state_dict'], strict=False)
-            print(f"Loaded initial weights from {weight_path}")
-
-        except:
-            print(f"There is no initial weights to load.")
-
-        before_weights = {name: param.clone().detach() for name, param in model.named_parameters()}
-
         """ Model layer tunning """
         # for name, param in model.named_parameters():
         #     print(f"{name}: {param.shape}")
 
         model.new_proj_vae = torch.nn.Conv2d(32 * 2, 3 * 2, kernel_size=1, bias=True)  # vae output dim: 32->3
-        model.new_proj_algin1 = torch.nn.Conv2d(3, 64, kernel_size=1, bias=False)  # vf dim -> vae dim
-        model.new_proj_algin2 = torch.nn.Conv2d(64, 1024, kernel_size=1, bias=False)  # vf dim -> vae dim
+        model.new_proj_align1 = torch.nn.Conv2d(3, 64, kernel_size=1, bias=False)  # vf dim -> vae dim
+        model.new_proj_align2 = torch.nn.Conv2d(64, 1024, kernel_size=1, bias=False)  # vf dim -> vae dim
         model.new_proj_align = torch.nn.Sequential(
-            model.new_proj_algin1,
-            model.new_proj_algin2
+            model.new_proj_align1,
+            model.new_proj_align2
         )
 
         def new_forward(self, input, sample_posterior=True):
@@ -636,7 +624,6 @@ if __name__ == "__main__":
                 return dec, posterior, z, aux_feature
                 # recon(=dec output), post(=enc output), sample of post, aux
 
-
         import types
         model.forward = types.MethodType(new_forward, model)
 
@@ -646,6 +633,7 @@ if __name__ == "__main__":
             params = (list(self.encoder.parameters()) +
                       list(self.decoder.parameters()) +
                       list(self.quant_conv.parameters()) +
+                      list(self.post_quant_conv.parameters()) + # 있는 게 맞는 것 같아서 수정함, 원래 세팅에 최대한 가깝게
                       list(self.new_proj_dec.parameters()) + # new layer
                       list(self.new_proj_vae.parameters())) # new layer
 
@@ -663,6 +651,43 @@ if __name__ == "__main__":
 
         import types
         model.configure_optimizers = types.MethodType(new_configure_optimizers, model)
+
+        # if config.init_weight is not None, load the weights
+        try:
+            model.load_state_dict(torch.load(config.init_weight)['state_dict'], strict=True)
+            print(f"Loaded initial weights from {config.init_weight}")
+
+            # weight for post_quantz_conv, 첫 실험에서 빼먹어서 원본 웨이트에서 추가함
+            # checkpoint = torch.load(config.init_weight2)['state_dict']
+            # if {k: v for k, v in checkpoint.items() if k.startswith("post_quant_conv")}:
+            #     model.load_state_dict({k: v for k, v in checkpoint.items() if k.startswith("post_quant_conv")}, strict=False)
+            #     print(f"Loaded initial weights2 from {config.init_weight2}")
+
+            #
+            # checkpoint = torch.load(config.init_weight)
+            # state_dict = checkpoint['state_dict']
+            #
+            # model_keys = set(model.state_dict().keys())
+            # ckpt_keys = set(state_dict.keys())
+            #
+            # loaded_keys = model_keys.intersection(ckpt_keys)
+            # not_loaded = model_keys - ckpt_keys
+            # extra_in_ckpt = ckpt_keys - model_keys
+            #
+            # print(f"Loaded layers ({len(loaded_keys)}):")
+            # for k in loaded_keys:
+            #     print("  ", k)
+            # print(f"\nNot found in checkpoint ({len(not_loaded)}):")
+            # for k in not_loaded:
+            #     print("  ", k)
+            # print(f"\nExtra keys in checkpoint ({len(extra_in_ckpt)}):")
+            # for k in extra_in_ckpt:
+            #     print("  ", k)
+
+        except:
+            print(f"There is no initial weights to load.")
+            import traceback
+            traceback.print_exc()
 
 
         # trainer and callbacks
@@ -802,8 +827,6 @@ if __name__ == "__main__":
         trainer.logdir = logdir  ###
 
 
-
-
         # data
         data = instantiate_from_config(config.data)
         # NOTE according to https://pytorch-lightning.readthedocs.io/en/latest/datamodules.html
@@ -873,7 +896,7 @@ if __name__ == "__main__":
             checkpoint_callback = ModelCheckpoint(
                 dirpath= os.path.join(logdir, 'checkpoints/'),
                 filename='model-{step}',
-                every_n_train_steps= 1000,
+                every_n_train_steps= 5000,
                 save_top_k=-1,
                 verbose=True,
             )

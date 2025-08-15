@@ -305,7 +305,7 @@ class AutoencoderKL(pl.LightningModule):
         assert ddconfig["double_z"]
         self.quant_conv = torch.nn.Conv2d(2*ddconfig["z_channels"], 2*embed_dim, 1)
         self.post_quant_conv = torch.nn.Conv2d(embed_dim, ddconfig["z_channels"], 1)
-        self.new_proj_dec = torch.nn.Conv2d(3, 32, 1) # new layer for eps
+        self.new_proj_dec = torch.nn.Conv2d(3, embed_dim, 1) # new layer for eps
         self.embed_dim = embed_dim
         if colorize_nlabels is not None:
             assert type(colorize_nlabels)==int
@@ -353,6 +353,7 @@ class AutoencoderKL(pl.LightningModule):
     
     def decode_eps(self, z):
         z = self.new_proj_dec(z)  # new layer
+        z = self.post_quant_conv(z)
         dec = self.decoder(z)
         return dec
 
@@ -386,12 +387,12 @@ class AutoencoderKL(pl.LightningModule):
     def training_step(self, batch, batch_idx):
         inputs = self.get_input(batch, self.image_key)
         reconstructions, posterior, z, aux_feature = self(inputs)
-        ae_opt, disc_opt = self.optimizers()
+        ae_opt, disc_opt = self.optimizers() # 수정한 설정으로 잘 나오는지
 
         # if optimizer_idx == 0:
         # train encoder+decoder+logvar
         enc_last_layer = self.encoder.conv_out.weight
-        aeloss, log_dict_ae = self.loss(inputs, reconstructions, posterior, 0, self.global_step,
+        aeloss, log_dict_ae = self.loss(inputs, reconstructions, posterior, 0, self.global_step,    # 0: optimizer_idx
                                         last_layer=self.get_last_layer(), split="train", z=z, aux_feature=aux_feature, 
                                         enc_last_layer=enc_last_layer)
         self.log("aeloss", aeloss, prog_bar=True, logger=True, on_step=True, on_epoch=True)
@@ -404,7 +405,7 @@ class AutoencoderKL(pl.LightningModule):
 
         # if optimizer_idx == 1:
         # train the discriminator
-        discloss, log_dict_disc = self.loss(inputs, reconstructions, posterior, 1, self.global_step,
+        discloss, log_dict_disc = self.loss(inputs, reconstructions, posterior, 1, self.global_step,    # 1: optimizer_idx
                                             last_layer=self.get_last_layer(), split="train", enc_last_layer=enc_last_layer)
 
         self.log("discloss", discloss, prog_bar=True, logger=True, on_step=True, on_epoch=True)

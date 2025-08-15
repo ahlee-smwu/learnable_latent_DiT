@@ -1,5 +1,7 @@
-ckpt_path: "../pretrained_weight/vavae-imagenet256-f16d32-dinov2.pt" # used for testing only, add your ckpt path if you want to test the model
-# weight_init: /path/to/weight_init # if you want to finetune va-vae on your own dataset, add your weight_init path
+#ckpt_path: "../pretrained_weight/vavae-imagenet256-f16d32-dinov2.pt" # used for testing only, add your ckpt path if you want to test the model
+#init_weight: "../pretrained_weight/vavae-imagenet256-f16d32-dinov2.pt" # if you want to finetune va-vae on your own dataset, add your weight_init path
+init_weight: "logs/3rd_2025-08-14T23-49-32_f16d32_vfdinov2/checkpoints/model-step=20000.ckpt"
+init_weight2: "vavae-imagenet256-f16d32-dinov2.pt"
 
 model:
   base_learning_rate: 1.0e-04
@@ -15,7 +17,7 @@ model:
     lossconfig:
       target: ldm.modules.losses.LPIPSWithDiscriminator
       params:
-        disc_start: 5001
+        disc_start: 40001 # 5001 # 1 for ckpt continued training
         kl_weight: 1.0e-06
         disc_weight: 0.5
         # hyper-param for vision foundation model alignment
@@ -45,7 +47,7 @@ model:
 data:
   target: main.DataModuleFromConfig
   params:
-    batch_size: 8 # batch size per GPU
+    batch_size: 4 # batch size per GPU
     wrap: true
     train:
       target: ldm.data.imagenet.ImageNetTrain
