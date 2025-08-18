@@ -59,7 +59,7 @@ from datasets.img_latent_dataset import ImgLatentDataset
 
 from ldm.data.base import Txt2ImgIterableBaseDataset
 from ldm.util import instantiate_from_config
-from train import DataModuleFromConfig
+# from train import DataModuleFromConfig
 
 from torchvision.datasets import ImageFolder
 from torchvision import transforms
@@ -103,11 +103,59 @@ def do_train(train_config, accelerator):
     """
     Model 1: VA-VAE
     """
-    model1_config_files = ["model1_f16d32_vfdinov2.yaml"]
+    model1_config_files = ["model1_f16d3_vfdinov2.yaml"]
     model1_configs = [OmegaConf.load(f) for f in model1_config_files]
     model1_config_merged = OmegaConf.merge(*model1_configs)
     model1 = instantiate_from_config(model1_config_merged.model)
     # model1.to(device)
+
+    """ Model layer tunning """
+    # for name, param in model.named_parameters():
+    #     print(f"{name}: {param.shape}")
+
+    model1.new_proj_vae = torch.nn.Conv2d(32 * 2, 3 * 2, kernel_size=1, bias=True)  # vae output dim: 32->3
+    model1.new_proj_align1 = torch.nn.Conv2d(3, 64, kernel_size=1, bias=False)  # vf dim -> vae dim
+    model1.new_proj_align2 = torch.nn.Conv2d(64, 1024, kernel_size=1, bias=False)  # vf dim -> vae dim
+    model1.new_proj_align = torch.nn.Sequential(
+        model1.new_proj_align1,
+        model1.new_proj_align2
+    )
+
+    def new_forward(self, input, sample_posterior=True):
+        '''encode'''
+        from ldm.modules.distributions.distributions import DiagonalGaussianDistribution
+        h = self.encoder(input)
+        moments = self.quant_conv(h)
+        moments = self.new_proj_vae(moments)  # new layer
+        posterior = DiagonalGaussianDistribution(moments)
+        # post: (B, D*2(mean, std)) D: latent dimension
+        '''sampling'''
+        if sample_posterior:
+            z = posterior.sample()
+        else:
+            z = posterior.mode()
+        '''decode'''
+        dec = self.decode_eps(z)
+        '''vf'''
+        if self.use_vf is not None:
+            aux_feature = self.foundation_model(input)
+            if not self.reverse_proj:
+                aux_feature = self.new_proj_align(aux_feature)
+            else:
+                z = self.new_proj_align(z)
+            return dec, posterior, z, aux_feature
+            # recon(=dec output), post(=enc output), sample of post, aux
+
+    import types
+    model1.forward = types.MethodType(new_forward, model1)
+
+    try:
+        model1.load_state_dict(torch.load(model1_config_merged.init_weight)['state_dict'], strict=True)
+        print(f"Loaded initial weights1 from {model1_config_merged.init_weight}")
+    except:
+        print(f"There is no initial weights1 to load.")
+        import traceback
+        traceback.print_exc()
 
     if 'downsample_ratio' in train_config['vae']:
         downsample_ratio = train_config['vae']['downsample_ratio']
@@ -142,7 +190,7 @@ def do_train(train_config, accelerator):
         model2 = load_weights_with_shape_check(model2, checkpoint, rank=rank)
         ema = load_weights_with_shape_check(ema, checkpoint, rank=rank)
         if accelerator.is_main_process:
-            logger.info(f"Loaded pretrained model from {train_config['train']['weight_init']}")
+            logger.info(f"Loaded pretrained model2 from {train_config['train']['weight_init']}")
     requires_grad(ema, False)
 
     # model = DDP(model.to(device), device_ids=[rank]) # DDP init error
@@ -173,7 +221,8 @@ def do_train(train_config, accelerator):
 
     # optimizer
     opt = torch.optim.AdamW(
-        param1_ae + list(model2.parameters()),
+        # param1_ae + list(model2.parameters()),
+        list(model2.parameters()), # dit train only
         lr=train_config['optimizer']['lr'], #0.0002
         weight_decay=0,
         # betas=(0.5, 0.9) # model1(VA-VAE) setting
@@ -283,7 +332,7 @@ def do_train(train_config, accelerator):
 
     # update_ema(ema, model1.modules, decay=0)  # Ensure EMA is initialized with synced weights # check
     # update_ema(ema, model2.modules, decay=0)  # Ensure EMA is initialized with synced weights
-    model1.train()  # important! This enables embedding dropout for classifier-free guidance
+    model1.eval()  # important! This enables embedding dropout for classifier-free guidance
     model2.train()  # important! This enables embedding dropout for classifier-free guidance
     ema.eval()  # EMA model should always be in eval mode
 
@@ -341,7 +390,8 @@ def do_train(train_config, accelerator):
             model_kwargs = dict(y=y)
 
             """ loss1 """
-            loss1_ae, loss1_disc, posterior = model1.module.training_step_eps(batch, batch_idx=None)
+            # loss1_ae, loss1_disc, posterior = model1.module.training_step_eps(batch, batch_idx=None)
+            _, _, posterior = model1.module.training_step_eps(batch, batch_idx=None)
             # get mu, sigma from this VA-VAE(model1)
 
             """mu, sigma interpolate for usage as DiT eps"""
@@ -353,6 +403,7 @@ def do_train(train_config, accelerator):
             learned_mu = learned_mu.view(-1, 256, 16, 3)
             learned_mu = learned_mu.unsqueeze(3).repeat(1, 1, 1, 16, 1)  # [1, 256, 16, 16, 3]
             learned_mu = learned_mu.view(-1, 256, 256, 3)
+            learned_mu = torch.zeros_like(learned_mu) # not use mu for dit, exp 1.
             learned_sigma = learned_sigma.unsqueeze(2).repeat(1, 1, 16, 1, 1)  # [1, 16, 16, 16, 3]
             learned_sigma = learned_sigma.view(-1, 256, 16, 3)
             learned_sigma = learned_sigma.unsqueeze(3).repeat(1, 1, 1, 16, 1)  # [1, 256, 16, 16, 3]
@@ -369,7 +420,8 @@ def do_train(train_config, accelerator):
                 loss2 = loss_dict2["loss"].mean()
 
             """final loss"""
-            loss = loss1_ae + loss2 # check loss vf_weight
+            # loss = loss1_ae + loss2 # check loss vf_weight
+            loss = loss2 # dit train only ver.
             opt.zero_grad()         # check optimizer
             accelerator.backward(loss)
             if 'max_grad_norm' in train_config['optimizer']:
@@ -379,17 +431,17 @@ def do_train(train_config, accelerator):
             update_ema(ema, model2.module)  # check ema, model1(ae)에는 굳이 안 써도 ㄱㅊ, 써서 효과가 있을 수도, model1(disc) 안 쓰는 게 나음
 
             """discriminator loss"""
-            opt_disc.zero_grad()  # check optimizer
-            accelerator.backward(loss1_disc)
-            opt_disc.step()
+            # opt_disc.zero_grad()  # check optimizer
+            # accelerator.backward(loss1_disc)
+            # opt_disc.step()
 
             # Log loss values:
             if 'cos_loss' in loss_dict2:
                 running_loss2 += mse_loss.item()
             else:
                 running_loss2 += loss2.item()
-            running_loss1_ae += loss1_ae.item()
-            running_loss1_disc += loss1_disc.item()
+            # running_loss1_ae += loss1_ae.item()
+            # running_loss1_disc += loss1_disc.item()
 
             log_steps += 1
             train_steps += 1
@@ -404,20 +456,21 @@ def do_train(train_config, accelerator):
                 dist.all_reduce(avg_loss2, op=dist.ReduceOp.SUM)
                 avg_loss2 = avg_loss2.item() / dist.get_world_size()
                 '''loss1_ae'''
-                avg_loss1_ae = torch.tensor(running_loss1_ae / log_steps, device=device)
-                dist.all_reduce(avg_loss1_ae, op=dist.ReduceOp.SUM)
-                avg_loss1_ae = avg_loss1_ae.item() / dist.get_world_size()
+                # avg_loss1_ae = torch.tensor(running_loss1_ae / log_steps, device=device)
+                # dist.all_reduce(avg_loss1_ae, op=dist.ReduceOp.SUM)
+                # avg_loss1_ae = avg_loss1_ae.item() / dist.get_world_size()
                 '''loss1_disc'''
-                avg_loss1_disc = torch.tensor(running_loss1_disc / log_steps, device=device)
-                dist.all_reduce(avg_loss1_disc, op=dist.ReduceOp.SUM)
-                avg_loss1_disc = avg_loss1_disc.item() / dist.get_world_size()
+                # avg_loss1_disc = torch.tensor(running_loss1_disc / log_steps, device=device)
+                # dist.all_reduce(avg_loss1_disc, op=dist.ReduceOp.SUM)
+                # avg_loss1_disc = avg_loss1_disc.item() / dist.get_world_size()
 
                 if accelerator.is_main_process:
                     logger.info(
-                        f"(step={train_steps:07d}) Loss2: {avg_loss2:.4f}, Loss1_ae: {avg_loss1_ae:.4f}, Loss1_disc: {avg_loss1_disc:.4f}, Train Steps/Sec: {steps_per_sec:.2f}")
+                        f"(step={train_steps:07d}) Loss2: {avg_loss2:.4f}, Train Steps/Sec: {steps_per_sec:.2f}")
+                    # f"(step={train_steps:07d}) Loss2: {avg_loss2:.4f}, Loss1_ae: {avg_loss1_ae:.4f}, Loss1_disc: {avg_loss1_disc:.4f}, Train Steps/Sec: {steps_per_sec:.2f}"
                     writer.add_scalar('Loss2/train', avg_loss2, train_steps)
-                    writer.add_scalar('Loss1_ae/train', avg_loss1_ae, train_steps)
-                    writer.add_scalar('Loss1_disc/train', avg_loss1_disc, train_steps)
+                    # writer.add_scalar('Loss1_ae/train', avg_loss1_ae, train_steps)
+                    # writer.add_scalar('Loss1_disc/train', avg_loss1_disc, train_steps)
 
                 # Reset monitoring variables:
                 running_loss2 = 0

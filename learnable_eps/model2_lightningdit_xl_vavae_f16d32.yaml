@@ -47,6 +47,7 @@ train:
   ckpt: null
   log_every: 100
   ckpt_every: 2000 #20000
+#  weight_init: '/home/ahlee/research/gen_AI/leanable_latent_DiT/pretrained_weight/lightningdit-xl-imagenet256-64ep.pt'
 optimizer:
   lr: 0.0002
   beta2: 0.95
