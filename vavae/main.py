@@ -40,6 +40,8 @@ from ldm.util import instantiate_from_config
 # torch.cuda.set_device(local_rank)
 # print(f"[Rank {os.environ.get('RANK','?')}] Using CUDA device {local_rank} (CUDA_VISIBLE_DEVICES={os.environ.get('CUDA_VISIBLE_DEVICES')})")
 
+CUDA_VISIBLE_DEVICES=0,1,2,3
+
 def get_parser(**parser_kwargs):
     def str2bool(v):
         if isinstance(v, bool):
@@ -586,6 +588,20 @@ if __name__ == "__main__":
         print(f"Total params: {total_params}")             # 391718245
         trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
         print(f"Trainable params: {trainable_params}")    # 72634469(72M)
+
+        # if config.init_weight is not None, load the weights
+        try:
+            weight_path = "../pretrained_weight/vavae-imagenet256-f16d32-dinov2.pt"
+            # print(f"Loading initial weights from {config.init_weight}")
+            # model.load_state_dict(torch.load(config.init_weight)['state_dict'], strict=False)
+            # print(ckpt.keys())
+            model.load_state_dict(torch.load(weight_path)['state_dict'], strict=False)
+            print(f"Loaded initial weights from {weight_path}")
+
+        except:
+            print(f"There is no initial weights to load.")
+
+        before_weights = {name: param.clone().detach() for name, param in model.named_parameters()}
 
         """ Model layer tunning """
         # for name, param in model.named_parameters():
