@@ -1,6 +1,6 @@
 #ckpt_path: "../pretrained_weight/vavae-imagenet256-f16d32-dinov2.pt" # used for testing only, add your ckpt path if you want to test the model
 #init_weight: "../pretrained_weight/vavae-imagenet256-f16d32-dinov2.pt" # if you want to finetune va-vae on your own dataset, add your weight_init path
-init_weight: "/home/ahlee/research/gen_AI/leanable_latent_DiT/vavae/logs/4th_2025-08-15T16-54-30_f16d32_vfdinov2/checkpoints/model-step=20000.ckpt"
+init_weight: "../pretrained_weight/model-step=20000.ckpt"
 #init_weight2: "vavae-imagenet256-f16d32-dinov2.pt"
 
 model:
@@ -47,18 +47,20 @@ model:
 data:
   target: main.DataModuleFromConfig
   params:
-    batch_size: 1 # batch size per GPU
+    batch_size: 4 # batch size per GPU
     wrap: true
     train:
       target: ldm.data.imagenet.ImageNetTrain
       params:
 #        data_root: /mnt/SSD_raid1/imagenet #/path/to/imagenet
-        data_root: /mnt/SSD_raid1/tiny-imagenet-200/train # navi
+#        data_root: /mnt/SSD_raid1/tiny-imagenet-200/train # navi
+        data_root: /home/ivpl2/ahlee/dataset/imagenet/ # a100
     validation:
       target: ldm.data.imagenet.ImageNetValidation
       params:
 #        data_root: /mnt/SSD_raid1/imagenet #/path/to/imagenet
-        data_root: /mnt/SSD_raid1/tiny-imagenet-200/val # navi
+#        data_root: /mnt/SSD_raid1/tiny-imagenet-200/val # navi
+        data_root: /home/ivpl2/ahlee/dataset/imagenet/ # a100
 
 lightning:
   trainer:

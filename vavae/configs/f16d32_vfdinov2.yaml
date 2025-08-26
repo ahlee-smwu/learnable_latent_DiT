@@ -1,7 +1,5 @@
-#ckpt_path: "../pretrained_weight/vavae-imagenet256-f16d32-dinov2.pt" # used for testing only, add your ckpt path if you want to test the model
-#init_weight: "../pretrained_weight/vavae-imagenet256-f16d32-dinov2.pt" # if you want to finetune va-vae on your own dataset, add your weight_init path
-init_weight: "logs/3rd_2025-08-14T23-49-32_f16d32_vfdinov2/checkpoints/model-step=20000.ckpt"
-init_weight2: "vavae-imagenet256-f16d32-dinov2.pt"
+ckpt_path: "../pretrained_weight/vavae-imagenet256-f16d32-dinov2.pt" # used for testing only, add your ckpt path if you want to test the model
+init_weight: "/home/ivpl2/ahlee/learnable_latent_DiT/weights/model-step=78000.ckpt"
 
 model:
   base_learning_rate: 1.0e-04
@@ -47,7 +45,7 @@ model:
 data:
   target: main.DataModuleFromConfig
   params:
-    batch_size: 4 # batch size per GPU
+    batch_size: 8 # batch size per GPU
     wrap: true
     train:
       target: ldm.data.imagenet.ImageNetTrain

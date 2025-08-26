@@ -59,7 +59,7 @@ from datasets.img_latent_dataset import ImgLatentDataset
 
 from ldm.data.base import Txt2ImgIterableBaseDataset
 from ldm.util import instantiate_from_config
-# from train import DataModuleFromConfig
+from vavae.main import DataModuleFromConfig
 
 from torchvision.datasets import ImageFolder
 from torchvision import transforms
@@ -244,62 +244,62 @@ def do_train(train_config, accelerator):
     #         'data'] else 0.18215,
     # )
     '''data for VA-VAE(model1)'''
-    # data = instantiate_from_config(model1_config_merged.data)
-    # # NOTE according to https://pytorch-lightning.readthedocs.io/en/latest/datamodules.html
-    # # calling these ourselves should not be necessary but it is.
-    # # lightning still takes care of proper multiprocessing though
-    # data.prepare_data()
-    # data.setup()
-    #
-    # train_dataset = data.datasets["train"]
-    # loader1 = DataLoader(
-    #     train_dataset,
-    #     batch_size=data.batch_size,
-    #     shuffle=True,
-    #     num_workers=data.num_workers,
-    #     pin_memory=True,
-    #     drop_last=True,
-    # )
-    # val_dataset = data.datasets["validation"]
-    # val_loader1 = DataLoader(
-    #     val_dataset,
-    #     batch_size=data.batch_size,
-    #     shuffle=True,
-    #     num_workers=data.num_workers,
-    #     pin_memory=True,
-    #     drop_last=True,
-    # )
-    # print("#### Data #####")
-    # for k in data.datasets:
-    #     print(f"{k}, {data.datasets[k].__class__.__name__}, {len(data.datasets[k])}")
+    data = instantiate_from_config(model1_config_merged.data)
+    # NOTE according to https://pytorch-lightning.readthedocs.io/en/latest/datamodules.html
+    # calling these ourselves should not be necessary but it is.
+    # lightning still takes care of proper multiprocessing though
+    data.prepare_data()
+    data.setup()
 
-    '''data for light dataset: Tiny-ImageNet'''
-    transform = transforms.Compose([
-        transforms.Resize((256, 256)),
-        transforms.ToTensor(),
-        transforms.Normalize(
-            mean=[0.5, 0.5, 0.5],
-            std=[0.5, 0.5, 0.5]
-        ) # norm to -1~1
-    ])
-    train_dataset = ImageFolder(root=model1_config_merged.data.params.train.params.data_root, transform=transform)
+    train_dataset = data.datasets["train"]
     loader1 = DataLoader(
         train_dataset,
-        batch_size=model1_config_merged.data.params.batch_size,
+        batch_size=data.batch_size,
         shuffle=True,
-        num_workers=train_config['data']['num_workers'],
+        num_workers=data.num_workers,
         pin_memory=True,
         drop_last=True,
     )
-    val_dataset = ImageFolder(root=model1_config_merged.data.params.train.params.data_root, transform=transform)
+    val_dataset = data.datasets["validation"]
     val_loader1 = DataLoader(
         val_dataset,
-        batch_size=model1_config_merged.data.params.batch_size,
+        batch_size=data.batch_size,
         shuffle=True,
-        num_workers=train_config['data']['num_workers'],
+        num_workers=data.num_workers,
         pin_memory=True,
         drop_last=True,
     )
+    print("#### Data #####")
+    for k in data.datasets:
+        print(f"{k}, {data.datasets[k].__class__.__name__}, {len(data.datasets[k])}")
+
+    '''data for light dataset: Tiny-ImageNet'''
+    # transform = transforms.Compose([
+    #     transforms.Resize((256, 256)),
+    #     transforms.ToTensor(),
+    #     transforms.Normalize(
+    #         mean=[0.5, 0.5, 0.5],
+    #         std=[0.5, 0.5, 0.5]
+    #     ) # norm to -1~1
+    # ])
+    # train_dataset = ImageFolder(root=model1_config_merged.data.params.train.params.data_root, transform=transform)
+    # loader1 = DataLoader(
+    #     train_dataset,
+    #     batch_size=model1_config_merged.data.params.batch_size,
+    #     shuffle=True,
+    #     num_workers=train_config['data']['num_workers'],
+    #     pin_memory=True,
+    #     drop_last=True,
+    # )
+    # val_dataset = ImageFolder(root=model1_config_merged.data.params.train.params.data_root, transform=transform)
+    # val_loader1 = DataLoader(
+    #     val_dataset,
+    #     batch_size=model1_config_merged.data.params.batch_size,
+    #     shuffle=True,
+    #     num_workers=train_config['data']['num_workers'],
+    #     pin_memory=True,
+    #     drop_last=True,
+    # )
 
     batch_size_per_gpu = int(np.round(train_config['train']['global_batch_size'] / accelerator.num_processes))
     global_batch_size = batch_size_per_gpu * accelerator.num_processes

@@ -591,12 +591,11 @@ if __name__ == "__main__":
 
         # if config.init_weight is not None, load the weights
         try:
-            weight_path = "../pretrained_weight/vavae-imagenet256-f16d32-dinov2.pt"
             # print(f"Loading initial weights from {config.init_weight}")
             # model.load_state_dict(torch.load(config.init_weight)['state_dict'], strict=False)
             # print(ckpt.keys())
-            model.load_state_dict(torch.load(weight_path)['state_dict'], strict=False)
-            print(f"Loaded initial weights from {weight_path}")
+            model.load_state_dict(torch.load(config.init_weight)['state_dict'], strict=False)
+            print(f"Loaded initial weights from {config.init_weight}")
 
         except:
             print(f"There is no initial weights to load.")
