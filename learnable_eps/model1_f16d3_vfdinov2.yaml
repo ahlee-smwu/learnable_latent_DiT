@@ -5,7 +5,7 @@ init_weight: "../pretrained_weight/model-step=20000.ckpt"
 
 model:
   base_learning_rate: 1.0e-04
-  target: ldm.models.autoencoder.AutoencoderKL
+  target: ldm.models.autoencoder.AutoencoderKL # eps folder
   params:
     monitor: val/rec_loss
     embed_dim: 32
@@ -47,7 +47,7 @@ model:
 data:
   target: main.DataModuleFromConfig
   params:
-    batch_size: 4 # batch size per GPU
+    batch_size: 16 #8 # batch size per GPU
     wrap: true
     train:
       target: ldm.data.imagenet.ImageNetTrain

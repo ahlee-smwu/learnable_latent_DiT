@@ -1,7 +1,7 @@
 # we recommend to read config_details.yaml first.
 
 #ckpt_path: '../pretrained_weight/lightningdit-xl-imagenet256-64ep.pt' # <---- download our pre-trained lightningdit or your own checkpoint
-ckpt_path: 'checkpoints/0012000.pt'
+ckpt_path: 'checkpoints/0012000.pt' # for inference
 
 data:
   data_path: '../pretrained_weight/latents_stats'
@@ -36,10 +36,11 @@ model:
   use_rmsnorm: true
   wo_shift: false
   in_chans: 3 #32
+  use_checkpoint: true
 
 # recommend to use default settings
 train:
-  max_steps: 80000
+  max_steps: 8000000
   global_batch_size: 1024
   global_seed: 0
   output_dir: 'output'
@@ -47,7 +48,7 @@ train:
   ckpt: null
   log_every: 100
   ckpt_every: 2000 #20000
-#  weight_init: '/home/ahlee/research/gen_AI/leanable_latent_DiT/pretrained_weight/lightningdit-xl-imagenet256-64ep.pt'
+  weight_init: 'output/5th_lightningdit_b2_vavae_f16d3_imgN/checkpoints/0080000.pt' # for train
 optimizer:
   lr: 0.0002
   beta2: 0.95

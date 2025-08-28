@@ -1,31 +1,49 @@
+import os
 import torch
-import timm
+from safetensors.torch import load_file
+import numpy as np
+import glob
+import pandas as pd
 
-outputs = {}
+def load_latents_from_batches(directory):
+    files = sorted(glob.glob(os.path.join(directory, 'latents_batch*.safetensors')))
+    mu_list, sigma_list, label_list = [], [], []
+    for f in files:
+        data = load_file(f)
+        mu_batch = data['mu'].float().cpu().numpy()
+        sigma_batch = data['sigma'].float().cpu().numpy() # (64, batch)
+        labels_batch = data['labels'].cpu().numpy()
+        print("#################")
+        print(mu_batch.shape)
+        print(sigma_batch.shape)
+        print(labels_batch.shape)
+        mu_list.append(mu_batch)
+        sigma_list.append(sigma_batch)
+        label_list.append(labels_batch)
+    mu = np.concatenate(mu_list, axis=0)       # (전체 샘플 수, latent_dim)
+    sigma = np.concatenate(sigma_list, axis=0)
+    labels = np.concatenate(label_list, axis=0)
+    print("#################")
+    print(mu.shape)
+    print(sigma.shape)
+    print(labels.shape)
+    return mu, sigma, labels
 
-def hook_fn(module, input, output):
-    outputs[module] = output.shape
+output_dir = "/home/ivpl2/ahlee/learnable_latent_DiT/learnable_eps/feature_output/model1_f16d3_vfdinov2/imagenet_train_256"
+mu, sigma, labels = load_latents_from_batches(output_dir)
 
-hooks = []
-# model = timm.create_model("hf-hub:timm/vit_base_patch14_dinov2.lvd142m", pretrained=True, dynamic_img_size=True) # dim: 768
-model = timm.create_model("hf-hub:timm/vit_large_patch14_dinov2.lvd142m", pretrained=True, dynamic_img_size=True) # dim: 1024
-
-
-for name, module in model.named_modules():
-    # 관심있는 레이어만 hook 걸기 (예: Conv, Linear, LayerNorm 등)
-    if isinstance(module, (torch.nn.Linear, torch.nn.Conv2d, torch.nn.LayerNorm)):
-        hooks.append(module.register_forward_hook(hook_fn))
-
-# 임의 입력 (예: DINOv2는 일반적으로 224x224 RGB 이미지)
-dummy_input = torch.randn(1, 3, 224, 224)
-
-# forward 실행
-model(dummy_input)
-
-# hook 제거
-for h in hooks:
-    h.remove()
-
-# 출력 결과 출력
-for module, shape in outputs.items():
-    print(f"{module}: output shape {shape}")
+unique_labels = np.unique(labels)
+summary = []
+for label in unique_labels:
+    inds = labels == label
+    summary.append({
+        'label': label,
+        'mu_mean': mu[inds].mean(axis=0),
+        'mu_std': mu[inds].std(axis=0),
+        'sigma_mean': sigma[inds].mean(axis=0),
+        'sigma_std': sigma[inds].std(axis=0),
+        'count': inds.sum()
+    })
+df = pd.DataFrame(summary)
+# df.to_csv('label_stats.csv', index=False)
+# print(df.head())
