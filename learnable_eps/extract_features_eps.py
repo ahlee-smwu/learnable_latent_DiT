@@ -23,6 +23,7 @@ from omegaconf import OmegaConf
 from ldm.util import instantiate_from_config
 from accelerate import Accelerator
 from ldm.models.autoencoder import AutoencoderKL
+from tqdm import tqdm
 
 os.environ["CUDA_VISIBLE_DEVICES"] = "0,1,2,3"
 
@@ -177,18 +178,24 @@ def main(args):
 
     global_batch_idx = 0
 
-    for batch_idx, batch in enumerate(loader1):
+    for batch in tqdm(loader1, desc=f"Epoch loop", dynamic_ncols=True):
         if hasattr(batch, '__getitem__') and 'image' in batch:
-            x = batch['image']
-            y = batch['class_label']
+            # print(batch.keys())
+            # dict_keys(['image', 'relpath', 'synsets', 'class_label', 'human_label', 'file_path_'])
+            x = batch['image']  # x: torch.Size([1, 256, 256, 3])
+            if 'class_label' in batch:
+                y = batch['class_label']
+            else:  # for non-label dataset, ex) lsun
+                y = torch.full((x.shape[0],), 0, device=x.device, dtype=torch.long)  # 0로 null class를 부여함
         else:
-            x = batch[0]
-            x = x.permute(0, 2, 3, 1)
+            x = batch[0]  # x: torch.Size([1, 3, 256, 256])
+            x = x.permute(0, 2, 3, 1)  # x: torch.Size([1, 256, 256, 3])
             y = batch[1]
             batch = {'image': x, 'class_label': y}
 
         if accelerator.mixed_precision == 'no':
             x = x.to(device, dtype=torch.float32)
+            y = y
         else:
             x = x.to(device)
             y = y.to(device)
@@ -207,11 +214,15 @@ def main(args):
             'sigma': learned_sigma,
             'labels': y
         }
-        save_filename = os.path.join(output_dir, f'latents_batch{global_batch_idx:06d}.safetensors')
+        save_filename = os.path.join(
+            output_dir,
+            f'latents_rank{rank:02d}_batch{global_batch_idx:06d}.safetensors'
+        )
         save_file(
             save_dict,
             save_filename,
             metadata={
+                'rank': str(rank),
                 'batch_idx': str(global_batch_idx),
                 'dtype': str(learned_mu.dtype),
                 'shape_mu': str(learned_mu.shape),
@@ -259,11 +270,11 @@ def main(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--data_path", type=str, default='')
-    parser.add_argument("--data_split", type=str, default='imagenet_train')
+    parser.add_argument("--data_split", type=str, default='lsun_train')
     parser.add_argument("--output_path", type=str, default="feature_output")
-    parser.add_argument("--config", type=str, default="config_details.yaml")
-    parser.add_argument("--image_size", type=int, default=256)
-    parser.add_argument("--batch_size", type=int, default=20)
+    parser.add_argument("--config", type=str, default="model1_f16d32_vfdinov2_add_layer.yaml")
+    parser.add_argument("--image_size", type=int, default=128)
+    parser.add_argument("--batch_size", type=int, default=32)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--num_workers", type=int, default=8)
     args = parser.parse_args()

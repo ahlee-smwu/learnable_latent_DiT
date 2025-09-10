@@ -1,49 +1,58 @@
-import os
-import torch
-from safetensors.torch import load_file
-import numpy as np
-import glob
 import pandas as pd
+import torch
+import re
+import numpy as np
 
-def load_latents_from_batches(directory):
-    files = sorted(glob.glob(os.path.join(directory, 'latents_batch*.safetensors')))
-    mu_list, sigma_list, label_list = [], [], []
-    for f in files:
-        data = load_file(f)
-        mu_batch = data['mu'].float().cpu().numpy()
-        sigma_batch = data['sigma'].float().cpu().numpy() # (64, batch)
-        labels_batch = data['labels'].cpu().numpy()
-        print("#################")
-        print(mu_batch.shape)
-        print(sigma_batch.shape)
-        print(labels_batch.shape)
-        mu_list.append(mu_batch)
-        sigma_list.append(sigma_batch)
-        label_list.append(labels_batch)
-    mu = np.concatenate(mu_list, axis=0)       # (전체 샘플 수, latent_dim)
-    sigma = np.concatenate(sigma_list, axis=0)
-    labels = np.concatenate(label_list, axis=0)
-    print("#################")
-    print(mu.shape)
-    print(sigma.shape)
-    print(labels.shape)
-    return mu, sigma, labels
 
-output_dir = "/home/ivpl2/ahlee/learnable_latent_DiT/learnable_eps/feature_output/model1_f16d3_vfdinov2/imagenet_train_256"
-mu, sigma, labels = load_latents_from_batches(output_dir)
+csv_path = "feature_output/model1_f16d3_vfdinov2/imagenet_train_256/label_stats.csv"
+output_csv_path = "feature_output/model1_f16d3_vfdinov2/imagenet_train_256/label_stats_with_kl.csv"
 
-unique_labels = np.unique(labels)
-summary = []
-for label in unique_labels:
-    inds = labels == label
-    summary.append({
-        'label': label,
-        'mu_mean': mu[inds].mean(axis=0),
-        'mu_std': mu[inds].std(axis=0),
-        'sigma_mean': sigma[inds].mean(axis=0),
-        'sigma_std': sigma[inds].std(axis=0),
-        'count': inds.sum()
-    })
-df = pd.DataFrame(summary)
-# df.to_csv('label_stats.csv', index=False)
-# print(df.head())
+
+def str_to_tensor(s):
+    """
+    CSV 문자열 -> torch tensor (16x16x3)
+    """
+    # 불필요한 대괄호 제거
+    s = s.replace('[', '').replace(']', '')
+    # 공백으로 숫자 분리 후 float로 변환
+    arr = np.fromstring(s, sep=' ', dtype=np.float32)
+    return torch.tensor(arr.reshape(16, 16, 3), dtype=torch.float32)
+
+
+def kl_div_map(mu, sigma):
+    """
+    mu, sigma: tensor (16x16x3)
+    return: tensor KL map (16x16x3)
+    KL divergence between N(mu, sigma^2) and N(0,1)
+    """
+    return 0.5 * (sigma ** 2 + mu ** 2 - 1 - torch.log(sigma ** 2 + 1e-8))
+
+
+# CSV 읽기
+df = pd.read_csv(csv_path)
+
+kl_org_mean_list = []
+kl_org_map_str_list = []
+kl_0mu_mean_list = []
+kl_0mu_map_str_list = []
+
+for _, row in df.iterrows():
+    label = row['label']
+    mu = str_to_tensor(row['mu_mean'])
+    sigma = str_to_tensor(row['sigma_mean'])
+
+    kl_org_map = kl_div_map(mu, sigma)
+    kl_0mu_map = kl_div_map(torch.zeros_like(mu), sigma)
+
+    kl_org_mean_list.append(kl_org_map.mean().item())
+    kl_org_map_str_list.append(kl_org_map.tolist())
+    kl_0mu_mean_list.append(kl_0mu_map.mean().item())
+    kl_0mu_map_str_list.append(kl_0mu_map.tolist())
+
+# CSV에 KL 평균값 및 맵 추가
+df['kl_org_mean'] = kl_org_mean_list
+df['kl_org_map'] = kl_org_map_str_list
+df['kl_0mu_mean'] = kl_0mu_mean_list
+df['kl_0mu_map'] = kl_0mu_map_str_list
+df.to_csv(output_csv_path, index=False)
+print(f"CSV with KL map and mean saved to {output_csv_path}")

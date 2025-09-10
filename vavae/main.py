@@ -533,6 +533,7 @@ if __name__ == "__main__":
     #               key: value
 
     now = datetime.datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
+    # now = datetime.datetime.now().strftime("%Y-%m-%dT%H")
 
     # add cwd for convenience and to make classes in this file available when
     # running as `python main.py`
@@ -549,7 +550,8 @@ if __name__ == "__main__":
     cfg_name = os.path.splitext(cfg_fname)[0]
     name = "_" + cfg_name
     nowname = now + name + opt.postfix
-    logdir = os.path.join(opt.logdir, nowname) # 이걸로 바꿔봄
+    # logdir = os.path.join(opt.logdir, nowname) # 이걸로 바꿔봄
+    logdir = os.path.join(opt.logdir, '7th_2025-09-02T15-27-04_model1_f16d32_vfdinov2_add_layer') # resume from here
     # logdir = os.path.join(opt.logdir, cfg_name)
 
     # auto resume from the latest checkpoint
@@ -558,7 +560,7 @@ if __name__ == "__main__":
     seed_everything(opt.seed)
     print(f"logdir: {logdir}")
 
-    print(f"Try to resume from {logdir}") # 체크포인트 쓰려면 logdir 원래대로 바꿔야 함, now x
+    print(f"Try to resume from {logdir}")
     ckpt_files = glob.glob(os.path.join(logdir, "checkpoints", "epoch=*.ckpt"))
     if not ckpt_files:
         print(f"Warning: No checkpoint files found in {os.path.join(logdir, 'checkpoints')}, training from scratch")
@@ -590,15 +592,56 @@ if __name__ == "__main__":
         print(f"Trainable params: {trainable_params}")    # 72634469(72M)
 
         # if config.init_weight is not None, load the weights
-        try:
-            # print(f"Loading initial weights from {config.init_weight}")
-            # model.load_state_dict(torch.load(config.init_weight)['state_dict'], strict=False)
-            # print(ckpt.keys())
-            model.load_state_dict(torch.load(config.init_weight)['state_dict'], strict=False)
-            print(f"Loaded initial weights from {config.init_weight}")
+        if config.init_weight is not None:
+            # 1️⃣ 체크포인트 불러오기
+            checkpoint = torch.load(config.init_weight)
+            state_dict = checkpoint['state_dict']
+            model_state = model.state_dict()
 
-        except:
-            print(f"There is no initial weights to load.")
+            # 2️⃣ 레이어 상태 확인
+            loaded_layers = []
+            failed_layers = []
+            unexpected_keys = []
+            missing_keys = []
+
+            for k in state_dict.keys():
+                if k in model_state:
+                    if state_dict[k].shape == model_state[k].shape:
+                        loaded_layers.append(k)
+                    else:
+                        failed_layers.append((k, state_dict[k].shape, model_state[k].shape))
+                else:
+                    unexpected_keys.append(k)
+
+            for k in model_state.keys():
+                if k not in state_dict:
+                    missing_keys.append(k)
+
+            # 3️⃣ 모델에 실제 로드 (strict=False)
+            try:
+                model.load_state_dict(state_dict, strict=False)
+                print(f"Loaded initial weights from {config.init_weight}\n")
+            except Exception as e:
+                # print(f"Failed to load initial weights: {e}\n")
+                pass
+
+            # 4️⃣ 출력
+            print("✅ Successfully loaded layers:")
+            for k in loaded_layers:
+                print(f"{k} | shape: {state_dict[k].shape}")
+
+            print("\n❌ Failed to load layers (shape mismatch):")
+            for k, ckpt_shape, model_shape in failed_layers:
+                print(f"{k} | checkpoint shape: {ckpt_shape} | model shape: {model_shape}")
+
+            print("\n⚠️ Missing keys (not in checkpoint):")
+            for k in missing_keys:
+                print(k)
+
+            print("\n⚠️ Unexpected keys (not in model):")
+            for k in unexpected_keys:
+                print(k)
+
 
         before_weights = {name: param.clone().detach() for name, param in model.named_parameters()}
 
@@ -911,7 +954,7 @@ if __name__ == "__main__":
             checkpoint_callback = ModelCheckpoint(
                 dirpath= os.path.join(logdir, 'checkpoints/'),
                 filename='model-{step}',
-                every_n_train_steps= 5000,
+                every_n_train_steps= 1000000,
                 save_top_k=-1,
                 verbose=True,
             )

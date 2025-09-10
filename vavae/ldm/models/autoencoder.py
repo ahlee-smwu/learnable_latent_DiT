@@ -319,7 +319,7 @@ class AutoencoderKL(pl.LightningModule):
             from ldm.models.foundation_models import aux_foundation_model
             print(f"Using {use_vf} as auxiliary feature.")
             self.foundation_model = aux_foundation_model(use_vf)
-            vf_feature_dim = self.foundation_model.feature_dim # 768? 1024?
+            vf_feature_dim = self.foundation_model.feature_dim # 768(dinov2_small), 1024(dinov2)
             self.linear_proj = torch.nn.Conv2d(vf_feature_dim, embed_dim, kernel_size=1, bias=True) # vf dim을 vae dim 으로
             if reverse_proj:
                 self.linear_proj = torch.nn.Conv2d(embed_dim, vf_feature_dim, kernel_size=1, bias=False)
@@ -416,7 +416,7 @@ class AutoencoderKL(pl.LightningModule):
         self.manual_backward(discloss)
         disc_opt.step()
 
-    def training_step_eps(self, batch, batch_idx): # do not backward, return loss
+    def training_step_eps(self, batch, batch_idx): # do not backward, return loss # end-to-end
         inputs = self.get_input(batch, self.image_key)
         reconstructions, posterior, z, aux_feature = self(inputs)
         # print("rec", reconstructions.shape)         # torch.Size([1, 3, 256, 256])
@@ -443,6 +443,16 @@ class AutoencoderKL(pl.LightningModule):
         self.log_dict(log_dict_disc, prog_bar=False, logger=True, on_step=True, on_epoch=False)
 
         return aeloss, discloss, posterior           # for learnable eps, custom train loop
+
+    def eval_eps(self, batch): # do not backward, return loss # eval mode, return post only
+        inputs = self.get_input(batch, self.image_key)
+        reconstructions, posterior, z, aux_feature = self(inputs)
+        # print("rec", reconstructions.shape)         # torch.Size([1, 3, 256, 256])
+        # print("post.mean", posterior.mean.shape)    # torch.Size([1, 3, 16, 16])
+        # print("z", z.shape)                         # torch.Size([1, 1024, 16, 16])
+        # print("aux", aux_feature.shape)             # torch.Size([1, 1024, 16, 16])
+
+        return posterior
 
 
     def validation_step(self, batch, batch_idx, dataloader_idx=0, data_type=None):

@@ -63,6 +63,8 @@ from vavae.main import DataModuleFromConfig
 
 from torchvision.datasets import ImageFolder
 from torchvision import transforms
+import torch.nn.functional as F
+from tqdm import tqdm
 
 def do_train(train_config, accelerator):
     """
@@ -103,7 +105,7 @@ def do_train(train_config, accelerator):
     """
     Model 1: VA-VAE
     """
-    model1_config_files = ["model1_f16d3_vfdinov2.yaml"]
+    model1_config_files = ["model1_f16d32_vfdinov2_add_layer.yaml"]
     model1_configs = [OmegaConf.load(f) for f in model1_config_files]
     model1_config_merged = OmegaConf.merge(*model1_configs)
     model1 = instantiate_from_config(model1_config_merged.model)
@@ -169,7 +171,7 @@ def do_train(train_config, accelerator):
     Model 2: LightningDiT
     """
     model2 = LightningDiT_models[train_config['model']['model_type']](
-        input_size=train_config['data']['image_size'], # latent x, direct image data
+        input_size=train_config['data']['image_size'], # 128(lsun) # latent x, direct image data
         num_classes=train_config['data']['num_classes'],
         use_qknorm=train_config['model']['use_qknorm'],
         use_swiglu=train_config['model']['use_swiglu'] if 'use_swiglu' in train_config['model'] else False,
@@ -251,6 +253,7 @@ def do_train(train_config, accelerator):
     data.prepare_data()
     data.setup()
 
+    """ImageNet"""
     train_dataset = data.datasets["train"]
     loader1 = DataLoader(
         train_dataset,
@@ -269,6 +272,7 @@ def do_train(train_config, accelerator):
         pin_memory=True,
         drop_last=True,
     )
+
     print("#### Data #####")
     for k in data.datasets:
         print(f"{k}, {data.datasets[k].__class__.__name__}, {len(data.datasets[k])}")
@@ -327,12 +331,14 @@ def do_train(train_config, accelerator):
                 f"Validation Dataset contains {len(valid_dataset):,} images {train_config['data']['valid_path']}")
 
     # Prepare models for training:
-    model1, model2, (opt,opt_disc), loader = accelerator.prepare(model1, model2, (opt,opt_disc), loader1)
+    model1, model2, (opt,opt_disc), loader = accelerator.prepare(model1, model2, (opt,opt_disc), loader1) # for end-to-end training
+    # model2, (opt,opt_disc), loader = accelerator.prepare( model2, (opt,opt_disc), loader1) # for DiT training
     # DDP error로 acc로 대체함
 
     # update_ema(ema, model1.modules, decay=0)  # Ensure EMA is initialized with synced weights # check
     # update_ema(ema, model2.modules, decay=0)  # Ensure EMA is initialized with synced weights
     model1.eval()  # important! This enables embedding dropout for classifier-free guidance
+    # model1.to(accelerator.device)
     model2.train()  # important! This enables embedding dropout for classifier-free guidance
     ema.eval()  # EMA model should always be in eval mode
 
@@ -367,19 +373,22 @@ def do_train(train_config, accelerator):
     if accelerator.is_main_process:
         logger.info(f"Using checkpointing: {use_checkpoint}")
 
+    '''Train'''
     while True:
-        for batch in loader:
+        for batch in tqdm(loader, desc=f"Epoch loop", dynamic_ncols=True):
             if hasattr(batch, '__getitem__') and 'image' in batch:
                 # print(batch.keys())
                      # dict_keys(['image', 'relpath', 'synsets', 'class_label', 'human_label', 'file_path_'])
                 x = batch['image']          # x: torch.Size([1, 256, 256, 3])
-                y = batch['class_label']
+                if 'class_label' in batch:
+                    y = batch['class_label']
+                else: # for non-label dataset, ex) lsun
+                    y = torch.full((x.shape[0],), 0, device=x.device, dtype=torch.long) # 0로 null class를 부여함
             else:
                 x = batch[0]                # x: torch.Size([1, 3, 256, 256])
                 x = x.permute(0, 2, 3, 1)   # x: torch.Size([1, 256, 256, 3])
                 y = batch[1]
                 batch = {'image': x, 'class_label':y}
-
 
             if accelerator.mixed_precision == 'no':
                 x = x.to(device, dtype=torch.float32)
@@ -390,26 +399,35 @@ def do_train(train_config, accelerator):
             model_kwargs = dict(y=y)
 
             """ loss1 """
-            # loss1_ae, loss1_disc, posterior = model1.module.training_step_eps(batch, batch_idx=None)
-            _, _, posterior = model1.module.training_step_eps(batch, batch_idx=None)
             # get mu, sigma from this VA-VAE(model1)
+            # loss1_ae, loss1_disc, postr = model1.module.training_step_eps(batch, batch_idx=None) # for end-to-end
+            # _, _, posterior = model1.module.training_step_eps(batch, batch_idx=None)
+            posterior = model1.module.eval_eps(batch) # for return post only
 
             """mu, sigma interpolate for usage as DiT eps"""
             learned_mu, learned_sigma = posterior.mu_sigma()
             learned_mu = learned_mu.permute(0, 2, 3, 1)     # torch.Size([1, 32, 16, 16]) -> torch.Size([1, 16, 16, 32])
             learned_sigma = learned_sigma.permute(0, 2, 3, 1)   # torch.Size([1, 32, 16, 16]) -> torch.Size([1, 16, 16, 32])
             # interpolate for learnable eps"""
-            learned_mu = learned_mu.unsqueeze(2).repeat(1, 1, 16, 1, 1)  # [1, 16, 16, 16, 3]
-            learned_mu = learned_mu.view(-1, 256, 16, 3)
-            learned_mu = learned_mu.unsqueeze(3).repeat(1, 1, 1, 16, 1)  # [1, 256, 16, 16, 3]
-            learned_mu = learned_mu.view(-1, 256, 256, 3)
-            learned_mu = torch.zeros_like(learned_mu) # not use mu for dit, exp 1.
-            learned_sigma = learned_sigma.unsqueeze(2).repeat(1, 1, 16, 1, 1)  # [1, 16, 16, 16, 3]
-            learned_sigma = learned_sigma.view(-1, 256, 16, 3)
-            learned_sigma = learned_sigma.unsqueeze(3).repeat(1, 1, 1, 16, 1)  # [1, 256, 16, 16, 3]
-            learned_sigma = learned_sigma.view(-1, 256, 256, 3)
+            learned_sigma = learned_sigma.unsqueeze(2).repeat(1, 1, 8, 1, 1)  # [1, 16, 16, 16, 3]
+            learned_sigma = learned_sigma.view(-1, 128, 16, 3)
+            learned_sigma = learned_sigma.unsqueeze(3).repeat(1, 1, 1, 8, 1)  # [1, 256, 16, 16, 3]
+            learned_sigma = learned_sigma.view(-1, 128, 128, 3)
+            train_mu = False
+            if train_mu:
+                learned_mu = learned_mu.unsqueeze(2).repeat(1, 1, 8, 1, 1)  # [1, 16, 16, 16, 3]
+                learned_mu = learned_mu.view(-1, 128, 16, 3)
+                learned_mu = learned_mu.unsqueeze(3).repeat(1, 1, 1, 8, 1)  # [1, 256, 16, 16, 3]
+                learned_mu = learned_mu.view(-1, 128, 128, 3)
+            else:
+                learned_mu = torch.zeros_like(learned_sigma) # don't train mu
 
             """ loss2 """
+            # if x.size(1) == 128:
+            #     x = x.permute(0, 3, 1, 2)  # (B, H, W, C) -> (B, C, H, W)
+            #     x_up = F.interpolate(x, scale_factor=2, mode='bilinear', align_corners=False)
+            #     x_up = x_up.permute(0, 2, 3, 1)  # (B, C, H, W) -> (B, H, W, C)
+
             # loss_dict2 = transport.training_losses(model2, x, model_kwargs)
             loss_dict2 = transport.training_losses_learnable_eps(model2, x, model_kwargs, learned_mu=learned_mu, learned_sigma=learned_sigma) # for learnable eps
 

@@ -45,16 +45,26 @@ model:
 data:
   target: main.DataModuleFromConfig
   params:
-    batch_size: 8 # batch size per GPU
+    batch_size: 1 #8 # batch size per GPU
     wrap: true
     train:
-      target: ldm.data.imagenet.ImageNetTrain
+#      target: ldm.data.imagenet.ImageNetTrain
+      target: ldm.data.imagenet.LSUNChurchesTrain
       params:
-        data_root: /mnt/SSD_raid1/imagenet #/path/to/imagenet
+#        data_root: /mnt/HDD2/dataset/imagenet # d26
+#        data_root: /mnt/SSD_raid1/imagenet/ # navi
+#        data_root: /mnt/HDD2/dataset/cifar-100/train # d26
+#        data_root: /mnt/SSD_raid1/tiny-imagenet-200/train # navi
+        data_root: /mnt/SSD_raid1/church_outdoor_train_lmdb_color_64.npy # navi
     validation:
-      target: ldm.data.imagenet.ImageNetValidation
+#      target: ldm.data.imagenet.ImageNetValidation
+      target: ldm.data.imagenet.LSUNChurchesValidation
       params:
-        data_root: /mnt/SSD_raid1/imagenet #/path/to/imagenet
+#        data_root: /mnt/HDD2/dataset/imagenet # d26
+#        data_root: /mnt/SSD_raid1/imagenet/ # navi
+#        data_root: /mnt/HDD2/dataset/cifar-100/val # d26
+#        data_root: /mnt/SSD_raid1/tiny-imagenet-200/val # navi
+        data_root: /mnt/SSD_raid1/church_outdoor_train_lmdb_color_64.npy # navi
 
 lightning:
   trainer:

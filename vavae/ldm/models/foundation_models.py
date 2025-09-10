@@ -69,7 +69,8 @@ class aux_foundation_model(nn.Module):
         # forward output: (b, N+1, d), N: patch, 1: cls token # torch.Size([1, 257, 768])
 
         # print("###########DINO", self.model.forward_features(x)[:, 1:].reshape(b, h//16, w//16, -1))
-        return self.model.forward_features(x)[:, 1:].reshape(b, h//16, w//16, -1).permute(0, 3, 1, 2) # 224 size, 14 patch=> //16
+        # return self.model.forward_features(x)[:, 1:].reshape(b, h//16, w//16, -1).permute(0, 3, 1, 2) # 224 size, 14 patch=> //16
+        return self.model.forward_features(x)[:, 1:].reshape(b, 16, 16, -1).permute(0, 3, 1, 2) # 224 size, 14 patch=> //16
 
     def forward(self, x):
         with torch.no_grad():

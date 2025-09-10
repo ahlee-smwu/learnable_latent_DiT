@@ -16,8 +16,8 @@ data:
   fid_reference_file: '../pretrained_weight/VIRTUAL_imagenet256_labeled.npz' # 'path/to/your/VIRTUAL_imagenet256_labeled.npz' # <---- path to your fid_reference_file.npz. download it from ADM
 
   # recommend to use default settings
-  image_size: 256
-  num_classes: 1000
+  image_size: 128 # 256 lsun
+  num_classes: 1 #1000 lsun
   num_workers: 8
   latent_norm: true # to normalize, channel-wise, only use for model2(DiT) latent dataset
   latent_multiplier: 1.0
@@ -44,11 +44,11 @@ train:
   global_batch_size: 1024
   global_seed: 0
   output_dir: 'output'
-  exp_name: 'lightningdit_b2_vavae_f16d3_imgN' # <---- experiment name, set as you like
+  exp_name: 'lightningdit_b2_vavae_f16d3_lsun' # <---- experiment name, set as you like
   ckpt: null
   log_every: 100
-  ckpt_every: 2000 #20000
-  weight_init: 'output/5th_lightningdit_b2_vavae_f16d3_imgN/checkpoints/0080000.pt' # for train
+  ckpt_every: 1000 #20000
+#  weight_init: '../pretrained_weight/lightningdit-xl-imagenet256-64ep.pt' # 'output/5th_lightningdit_b2_vavae_f16d3_imgN/checkpoints/0080000.pt' # for train
 optimizer:
   lr: 0.0002
   beta2: 0.95
