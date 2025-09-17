@@ -24,6 +24,7 @@ from ldm.util import instantiate_from_config
 from accelerate import Accelerator
 from ldm.models.autoencoder import AutoencoderKL
 from tqdm import tqdm
+from PIL import Image
 
 os.environ["CUDA_VISIBLE_DEVICES"] = "0,1,2,3"
 
@@ -202,7 +203,8 @@ def main(args):
         model_kwargs = dict(y=y)
 
         with torch.no_grad():
-            _, _, posterior = model1.module.training_step_eps(batch, batch_idx=None)
+            # _, _, posterior = model1.module.training_step_eps(batch, batch_idx=None)
+            _, _, posterior = model1.training_step_eps(batch, batch_idx=None)
 
             learned_mu, learned_sigma = posterior.mu_sigma()
             learned_mu = learned_mu.permute(0, 2, 3, 1).contiguous()
@@ -230,6 +232,14 @@ def main(args):
                 'shape_labels': str(y.shape)
             }
         )
+
+        imgs = x
+        for i in range(imgs.shape[0]):
+            img = imgs[i]  # [H, W, C]
+            img_uint8 = (img * 255).clamp(0, 255).to(torch.uint8).cpu().numpy()
+            Image.fromarray(img_uint8).save(
+                os.path.join(output_dir, f'img_rank{rank:02d}_batch{global_batch_idx:06d}_{i:03d}.png')
+            )
 
         global_batch_idx += 1
 

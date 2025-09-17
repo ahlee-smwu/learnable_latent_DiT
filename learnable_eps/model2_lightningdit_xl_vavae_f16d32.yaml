@@ -1,7 +1,9 @@
 # we recommend to read config_details.yaml first.
 
 #ckpt_path: '../pretrained_weight/lightningdit-xl-imagenet256-64ep.pt' # <---- download our pre-trained lightningdit or your own checkpoint
-ckpt_path: 'checkpoints/0012000.pt' # for inference
+ckpt_path: '../pretrained_weight/8th_DiT_ckpt/0006000.pt' # for inference
+#ckpt_path: '/home/ivpl-d26/0013000.pt' # for inference
+
 
 data:
   data_path: '../pretrained_weight/latents_stats'
@@ -71,7 +73,7 @@ sample:
   rtol: 0.001
   reverse: false
   likelihood: false
-  num_sampling_steps: 2000 #250
+  num_sampling_steps: 250
   cfg_scale: 0.0 #10.0 # <---- cfg scale, for 800 epoch performance with FID=1.35 cfg_scale=6.7
                   #       for 64 epoch performance with FID=2.11 cfg_scale=10.0
                   #       you may find we use a large cfg_scale, this is because of 2 reasons:
@@ -80,6 +82,6 @@ sample:
   
   # recommend to use default settings
   per_proc_batch_size: 1 # batch per process(GPU)
-  fid_num: 5
+  fid_num: 7
   cfg_interval_start: 0.11
   timestep_shift: 0.3

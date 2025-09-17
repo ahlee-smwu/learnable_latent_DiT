@@ -11,7 +11,7 @@
       <excludeFolder url="file://$MODULE_DIR$/learnable_eps/output/save_lightningdit_xl_vavae_f16d32" />
       <excludeFolder url="file://$MODULE_DIR$/vavae/logs" />
     </content>
-    <orderEntry type="jdk" jdkName="learnable_eps" jdkType="Python SDK" />
+    <orderEntry type="jdk" jdkName="leanable_eps" jdkType="Python SDK" />
     <orderEntry type="sourceFolder" forTests="false" />
   </component>
   <component name="PyDocumentationSettings">

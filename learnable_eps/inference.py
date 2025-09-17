@@ -29,6 +29,8 @@ from tokenizer.vavae import VA_VAE
 from models.lightningdit import LightningDiT_models
 from transport import create_transport, Sampler
 from datasets.img_latent_dataset import ImgLatentDataset
+import torch.nn.functional as F
+from safetensors.torch import save_file, load_file
 
 # sample function
 def do_sample(train_config, accelerator, ckpt_path=None, cfg_scale=None, model=None, vae=None, demo_sample_mode=False):
@@ -98,6 +100,7 @@ def do_sample(train_config, accelerator, ckpt_path=None, cfg_scale=None, model=N
     model.load_state_dict(checkpoint)
     model.eval()  # important!
     model.to(device)
+
 
     transport = create_transport(
         train_config['transport']['path_type'],
@@ -177,7 +180,7 @@ def do_sample(train_config, accelerator, ckpt_path=None, cfg_scale=None, model=N
         if accelerator.process_index == 0:
             image_list = []
             os.makedirs('demo_images', exist_ok=True)
-            for label in tqdm([975, 3, 207, 387, 388, 88, 979, 279], desc="Generating Demo Samples"): # fix the label for gen, label conditioning
+            for label in tqdm([0,0,0,0], desc="Generating Demo Samples"): # fix the label for gen, label conditioning # [975, 3, 207, 387, 388, 88, 979, 279]
                 z = torch.randn(1, model.in_channels, image_size, image_size, device=device)
                 y = torch.tensor([label], device=device)
                 z = torch.cat([z, z], 0)
@@ -217,11 +220,46 @@ def do_sample(train_config, accelerator, ckpt_path=None, cfg_scale=None, model=N
             # Sample inputs:
             z = torch.randn(n, model.in_channels, image_size, image_size, device=device)
             y = torch.randint(0, train_config['data']['num_classes'], (n,), device=device)
-            
+
+            # Sample input from pre-trained VA-VAE:
+            from safetensors.torch import load_file
+            file_path = "feature_output/model1_f16d32_vfdinov2_add_layer/lsun_train_128/latents_rank00_batch000001.safetensors"
+            data = load_file(file_path)
+
+            mu = data["mu"][i:i+1]  # shape: [B, H, W, C]
+            sigma = data["sigma"][i:i+1]  # shape: [B, H, W, C]
+
+            mu = mu.permute(0, 3, 1, 2).contiguous()
+            sigma = sigma.permute(0, 3, 1, 2).contiguous()
+
+            mu = mu.to(device)
+            sigma = sigma.to(device)
+
+            eps = torch.randn_like(mu)
+            z_org = mu + sigma * eps
+
+            mu_up = F.interpolate(mu, scale_factor=8, mode="bilinear")
+            sigma_up = F.interpolate(sigma, scale_factor=8, mode="bilinear")
+            eps_up = torch.randn_like(mu_up)
+            mu_zero = torch.zeros(mu_up.shape, dtype=mu_up.dtype, device=mu_up.device) # for only sigma train model
+            z = mu_zero + sigma_up * eps_up
+
+            print_with_prefix('Sample z from VA-VAE')
+
+            # visualize the z
+            z_img = torch.clamp((z + 1.0) * 127.5, 0, 255).permute(0, 2, 3, 1).to("cpu",
+                                                                                          dtype=torch.uint8).numpy()
+
+            # Save samples to disk as individual .png files
+            for i, sample in enumerate(z_img):
+                index = i * accelerator.num_processes + accelerator.process_index + total
+                Image.fromarray(sample).save(f"{sample_folder_dir}/{index:06d}_z.png")
+
+
             # Setup classifier-free guidance:
             if using_cfg:
                 z = torch.cat([z, z], 0)
-                y_null = torch.tensor([1000] * n, device=device)
+                y_null = torch.tensor([train_config['data']['num_classes']] * n, device=device)
                 y = torch.cat([y, y_null], 0)
                 model_kwargs = dict(y=y, cfg_scale=cfg_scale, cfg_interval=True, cfg_interval_start=cfg_interval_start)
                 model_fn = model.forward_with_cfg
@@ -235,6 +273,16 @@ def do_sample(train_config, accelerator, ckpt_path=None, cfg_scale=None, model=N
             if using_cfg:
                 samples, _ = samples.chunk(2, dim=0)  # Remove null class samples
 
+            '''save tensor file'''
+            z_cpu = z.contiguous().float().cpu()
+            z_org_cpu = z_org.contiguous().float().cpu()
+            samples_cpu = samples.contiguous().float().cpu()
+            save_file({
+                    "z": z_cpu,
+                    "z_org": z_org_cpu,
+                    "output": samples_cpu },
+                f"{sample_folder_dir}/{index:06d}.safetensors"
+            )
             # print(samples) # -1~1 normalized, 범위를 넘는 것도 있는데? step이 커지면서 맞춰지는 건가
             samples = torch.clamp((samples + 1.0) * 127.5, 0, 255).permute(0, 2, 3, 1).to("cpu",
                                                                                          dtype=torch.uint8).numpy()
@@ -245,7 +293,7 @@ def do_sample(train_config, accelerator, ckpt_path=None, cfg_scale=None, model=N
             # Save samples to disk as individual .png files
             for i, sample in enumerate(samples):
                 index = i * accelerator.num_processes + accelerator.process_index + total
-                Image.fromarray(sample).save(f"{sample_folder_dir}/{index:06d}.png")
+                Image.fromarray(sample).save(f"{sample_folder_dir}/{index:06d}_output.png")
             total += global_batch_size
             accelerator.wait_for_everyone()
 
