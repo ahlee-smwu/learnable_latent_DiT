@@ -11,6 +11,7 @@ def create_transport(
     partitial_train=None,
     partial_ratio=1.0,
     shift_lg=False,
+    adaptive_eps=False,
 ):
     """function for creating Transport object
     **Note**: model prediction defaults to velocity
@@ -68,6 +69,7 @@ def create_transport(
         partitial_train=partitial_train,
         partial_ratio=partial_ratio,
         shift_lg=shift_lg,
+        adaptive_eps=adaptive_eps,
     )
     
     return state

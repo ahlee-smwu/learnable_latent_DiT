@@ -6,7 +6,7 @@ DiT_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.append(vavae_path)
 sys.path.append(DiT_path)
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "0,1,2,3"
+# os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
 import argparse, os, sys, datetime, glob, importlib, csv
 import numpy as np
@@ -65,6 +65,8 @@ from torchvision.datasets import ImageFolder
 from torchvision import transforms
 import torch.nn.functional as F
 from tqdm import tqdm
+import numpy as np
+import joblib
 
 def do_train(train_config, accelerator):
     """
@@ -152,10 +154,28 @@ def do_train(train_config, accelerator):
     model1.forward = types.MethodType(new_forward, model1)
 
     try:
-        model1.load_state_dict(torch.load(model1_config_merged.init_weight)['state_dict'], strict=True)
-        print(f"Loaded initial weights1 from {model1_config_merged.init_weight}")
-    except:
-        print(f"There is no initial weights1 to load.")
+        ckpt = torch.load(model1_config_merged.init_weight, map_location="cpu")
+        state_dict = ckpt["state_dict"] if "state_dict" in ckpt else ckpt
+        # 현재 모델의 state_dict
+        model_dict = model1.state_dict()
+        # shape이 일치하는 key만 추출
+        matched_state_dict = {
+            k: v for k, v in state_dict.items()
+            if k in model_dict and v.shape == model_dict[k].shape
+        }
+        # 로드
+        missing, unexpected = model1.load_state_dict(matched_state_dict, strict=False)
+
+        if accelerator.is_main_process:
+            logger.info(f"Loaded pretrained model1 (partial) from {model1_config_merged.init_weight}")
+            logger.info(f"Matched keys: {len(matched_state_dict)} / {len(model_dict)}")
+            if missing:
+                logger.info(f"Missing keys: {missing}")
+            if unexpected:
+                logger.info(f"Unexpected keys: {unexpected}")
+
+    except Exception as e:
+        print("There is no initial weights1 to load.")
         import traceback
         traceback.print_exc()
 
@@ -238,6 +258,14 @@ def do_train(train_config, accelerator):
         # betas=(0.9, train_config['optimizer']['beta2']) # model2(diffusion) setting
     )
 
+    """
+    GMM Model: for data cluster
+    """
+    mean, std, W, gmm_params = load_gmm_to_torch(
+        model_dir='feature_output/model1_6th_f16d32_vfdinov2_add_layer/gmm2',
+        device=accelerator.device
+    )
+
     '''data for DiT(model2)'''
     # dataset = ImgLatentDataset(
     #     data_dir=train_config['data']['data_path'],
@@ -258,7 +286,7 @@ def do_train(train_config, accelerator):
     loader1 = DataLoader(
         train_dataset,
         batch_size=data.batch_size,
-        shuffle=True,
+        shuffle=False,
         num_workers=data.num_workers,
         pin_memory=True,
         drop_last=True,
@@ -267,7 +295,7 @@ def do_train(train_config, accelerator):
     val_loader1 = DataLoader(
         val_dataset,
         batch_size=data.batch_size,
-        shuffle=True,
+        shuffle=False,
         num_workers=data.num_workers,
         pin_memory=True,
         drop_last=True,
@@ -331,8 +359,8 @@ def do_train(train_config, accelerator):
                 f"Validation Dataset contains {len(valid_dataset):,} images {train_config['data']['valid_path']}")
 
     # Prepare models for training:
-    model1, model2, (opt,opt_disc), loader = accelerator.prepare(model1, model2, (opt,opt_disc), loader1) # for end-to-end training
-    # model2, (opt,opt_disc), loader = accelerator.prepare( model2, (opt,opt_disc), loader1) # for DiT training
+    # model1, model2, (opt,opt_disc), loader = accelerator.prepare(model1, model2, (opt,opt_disc), loader1) # for end-to-end training
+    model1, model2, opt, loader = accelerator.prepare(model1, model2, opt, loader1) # for DiT training
     # DDP error로 acc로 대체함
 
     # update_ema(ema, model1.modules, decay=0)  # Ensure EMA is initialized with synced weights # check
@@ -373,6 +401,7 @@ def do_train(train_config, accelerator):
     if accelerator.is_main_process:
         logger.info(f"Using checkpointing: {use_checkpoint}")
 
+
     '''Train'''
     while True:
         for batch in tqdm(loader, desc=f"Epoch loop", dynamic_ncols=True):
@@ -402,18 +431,35 @@ def do_train(train_config, accelerator):
             # get mu, sigma from this VA-VAE(model1)
             # loss1_ae, loss1_disc, postr = model1.module.training_step_eps(batch, batch_idx=None) # for end-to-end
             # _, _, posterior = model1.module.training_step_eps(batch, batch_idx=None)
-            posterior = model1.module.eval_eps(batch) # for return post only
+            posterior = model1.eval_eps(batch) # for return post only
 
-            """mu, sigma interpolate for usage as DiT eps"""
-            learned_mu, learned_sigma = posterior.mu_sigma()
-            learned_mu = learned_mu.permute(0, 2, 3, 1)     # torch.Size([1, 32, 16, 16]) -> torch.Size([1, 16, 16, 32])
-            learned_sigma = learned_sigma.permute(0, 2, 3, 1)   # torch.Size([1, 32, 16, 16]) -> torch.Size([1, 16, 16, 32])
-            # interpolate for learnable eps"""
+            """ mu, sigma for usage as DiT eps """
+            learned_mu, learned_sigma = posterior.mu_sigma() # (B, 3, 16, 16)
+
+            ## ver.2: use dist through gmm
+            with torch.no_grad():
+                _, _, learned_mu, learned_sigma = assign_cluster_torch(learned_mu, learned_sigma, mean, std, W, gmm_params)
+            learned_sigma = normalize_cluster_variance(learned_sigma, target_var=1.0, alpha=0.5) # norm by clusters info
+
+            ## ver.1: directly use dist from model1
+            # learned_mu = learned_mu.permute(0, 2, 3, 1)     # torch.Size([1, 32, 16, 16]) -> torch.Size([1, 16, 16, 32])
+            # learned_sigma = learned_sigma.permute(0, 2, 3, 1)   # torch.Size([1, 32, 16, 16]) -> torch.Size([1, 16, 16, 32])
+            # # normalization # std는 너무 작아서 적용하니 0으로 나누는 꼴이 되어 발산함
+            # stats = torch.load("feature_output/model1_6th_f16d32_vfdinov2_add_layer/mu_sigma_means.pt")
+            # mu_mean = stats["mu_spatial_mean"].to(device)  # shape [3]
+            # # mu_std = stats["mu_std"].to(device)    # shape [3]
+            # # sigma_mean = stats["sigma_mean"].to(device)  # shape [3]
+            # # sigma_std = stats["sigma_std"].to(device)  # shape [3]
+            # # learned_mu = (learned_mu - mu_mean[None, None, None, :]) / mu_std[None, None, None, :]
+            # learned_mu = learned_mu - mu_mean[None, :, :, :]
+            # # learned_sigma = (learned_sigma - sigma_mean[None, None, None, :]) / sigma_std[None, None, None, :]
+            
+            # upsampling
             learned_sigma = learned_sigma.unsqueeze(2).repeat(1, 1, 8, 1, 1)  # [1, 16, 16, 16, 3]
             learned_sigma = learned_sigma.view(-1, 128, 16, 3)
             learned_sigma = learned_sigma.unsqueeze(3).repeat(1, 1, 1, 8, 1)  # [1, 256, 16, 16, 3]
             learned_sigma = learned_sigma.view(-1, 128, 128, 3)
-            train_mu = False
+            train_mu = True
             if train_mu:
                 learned_mu = learned_mu.unsqueeze(2).repeat(1, 1, 8, 1, 1)  # [1, 16, 16, 16, 3]
                 learned_mu = learned_mu.view(-1, 128, 16, 3)
@@ -440,13 +486,21 @@ def do_train(train_config, accelerator):
             """final loss"""
             # loss = loss1_ae + loss2 # check loss vf_weight
             loss = loss2 # dit train only ver.
+
+            """Pass training"""
+            # if loss > 1.0: # loss 터짐
+            #     # subtraction between x & stats
+            #     diff_mean = torch.abs(org_mu - inter_mu).mean()
+            #     logger.info(f"Loss > 1.0, loss: {loss}, diff_mean: {diff_mean}")
+            #     continue
+
             opt.zero_grad()         # check optimizer
             accelerator.backward(loss)
             if 'max_grad_norm' in train_config['optimizer']:
                 if accelerator.sync_gradients:
                     accelerator.clip_grad_norm_(model2.parameters(), train_config['optimizer']['max_grad_norm'])
             opt.step()
-            update_ema(ema, model2.module)  # check ema, model1(ae)에는 굳이 안 써도 ㄱㅊ, 써서 효과가 있을 수도, model1(disc) 안 쓰는 게 나음
+            update_ema(ema, model2)  # check ema, model1(ae)에는 굳이 안 써도 ㄱㅊ, 써서 효과가 있을 수도, model1(disc) 안 쓰는 게 나음
 
             """discriminator loss"""
             # opt_disc.zero_grad()  # check optimizer
@@ -469,15 +523,15 @@ def do_train(train_config, accelerator):
                 end_time = time()
                 steps_per_sec = log_steps / (end_time - start_time)
                 # Reduce loss history over all processes:
-                '''loss2'''
+                ## loss2
                 avg_loss2 = torch.tensor(running_loss2 / log_steps, device=device)
-                dist.all_reduce(avg_loss2, op=dist.ReduceOp.SUM)
-                avg_loss2 = avg_loss2.item() / dist.get_world_size()
-                '''loss1_ae'''
+                avg_loss2 = accelerator.reduce(avg_loss2, reduction="mean")
+                avg_loss2 = avg_loss2.item()
+                ## loss1_ae
                 # avg_loss1_ae = torch.tensor(running_loss1_ae / log_steps, device=device)
                 # dist.all_reduce(avg_loss1_ae, op=dist.ReduceOp.SUM)
                 # avg_loss1_ae = avg_loss1_ae.item() / dist.get_world_size()
-                '''loss1_disc'''
+                ## loss1_disc
                 # avg_loss1_disc = torch.tensor(running_loss1_disc / log_steps, device=device)
                 # dist.all_reduce(avg_loss1_disc, op=dist.ReduceOp.SUM)
                 # avg_loss1_disc = avg_loss1_disc.item() / dist.get_world_size()
@@ -501,7 +555,7 @@ def do_train(train_config, accelerator):
             if train_steps % train_config['train']['ckpt_every'] == 0 and train_steps > 0:
                 if accelerator.is_main_process:
                     checkpoint = {
-                        "model": model2.module.state_dict(),
+                        "model": model2.state_dict(),
                         "ema": ema.state_dict(),
                         "opt": opt.state_dict(),
                         "config": train_config,
@@ -510,19 +564,28 @@ def do_train(train_config, accelerator):
                     torch.save(checkpoint, checkpoint_path)
                     if accelerator.is_main_process:
                         logger.info(f"Saved checkpoint to {checkpoint_path}")
-                dist.barrier()
+                if dist.is_available() and dist.is_initialized() and dist.get_world_size() > 1:
+                    dist.barrier()
 
                 # Evaluate on validation set
                 if 'valid_path' in train_config['data']:
                     if accelerator.is_main_process:
                         logger.info(f"Start evaluating at step {train_steps}")
                     val_loss = evaluate(model2, valid_loader, device, transport, (0.0, 1.0))
-                    dist.all_reduce(val_loss, op=dist.ReduceOp.SUM)
-                    val_loss = val_loss.item() / dist.get_world_size()
+
+                    if dist.is_available() and dist.is_initialized() and dist.get_world_size() > 1:
+                        dist.all_reduce(val_loss, op=dist.ReduceOp.SUM)
+                        val_loss = val_loss.item() / dist.get_world_size()
+                    else:
+                        val_loss = val_loss.item()
+
                     if accelerator.is_main_process:
                         logger.info(f"Validation Loss: {val_loss:.4f}")
                         writer.add_scalar('Loss/validation', val_loss, train_steps)
                     model2.train()
+                    
+                    
+
             if train_steps >= train_config['train']['max_steps']:
                 break
         if train_steps >= train_config['train']['max_steps']:
@@ -533,6 +596,179 @@ def do_train(train_config, accelerator):
 
     return accelerator
 
+# from gmm_model import PosteriorDiagGMM 로 대체하고 아래의 클래스 복붙은 지우는 게 유지보수에 나음
+class PosteriorDiagGMM:
+    def __init__(self, n_components, dim, reg=1e-6, seed=0):
+        self.K = n_components
+        self.dim = dim
+        self.reg = reg
+        self.rng = np.random.RandomState(seed)
+
+    def init_params(self, mu):
+        idx = self.rng.choice(mu.shape[0], self.K, replace=False)
+        self.m = mu[idx].copy()
+        self.s2 = np.ones((self.K, self.dim), dtype=np.float32)
+        self.pi = np.ones(self.K, dtype=np.float32) / self.K
+
+    def e_step(self, mu, sigma2):
+        N = mu.shape[0]
+        log_r = np.zeros((N, self.K), dtype=np.float32)
+
+        for k in range(self.K):
+            diff2 = (mu - self.m[k]) ** 2
+            log_r[:, k] = (
+                np.log(self.pi[k] + 1e-12)
+                - 0.5 * np.sum(
+                    (diff2 + sigma2) / self.s2[k]
+                    + np.log(self.s2[k]),
+                    axis=1
+                )
+            )
+
+        log_r -= log_r.max(axis=1, keepdims=True)
+        r = np.exp(log_r)
+        r /= r.sum(axis=1, keepdims=True)
+        return r
+
+    def m_step(self, mu, sigma2, r):
+        Nk = r.sum(axis=0) + 1e-8
+        self.pi = Nk / Nk.sum()
+
+        self.m = (r.T @ mu) / Nk[:, None]
+
+        for k in range(self.K):
+            diff2 = (mu - self.m[k]) ** 2
+            self.s2[k] = (
+                (r[:, k][:, None] * (diff2 + sigma2)).sum(axis=0)
+                / Nk[k]
+            )
+
+        self.s2 = np.maximum(self.s2, self.reg)
+
+    def fit(self, mu, sigma2, iters=50):
+        self.init_params(mu)
+        for it in range(iters):
+            r = self.e_step(mu, sigma2)
+            self.m_step(mu, sigma2, r)
+            print(f"[EM] iter {it+1}/{iters} done")
+
+@torch.no_grad()
+def load_gmm_to_torch(model_dir, device):
+    """
+    Load trained GMM + PCA + stats and move everything to GPU
+    """
+
+    # ---- load stats
+    stats = np.load(os.path.join(model_dir, "standardize_stats.npz"))
+    mean = torch.from_numpy(stats["mean"]).to(device)
+    std  = torch.from_numpy(stats["std"]).to(device)
+
+    # ---- load PCA
+    ipca = joblib.load(os.path.join(model_dir, "ipca.joblib"))
+    W = torch.from_numpy(ipca.components_.astype(np.float32)).to(device)  # (P,768)
+
+    # ---- load posterior GMM
+    gmm = joblib.load(os.path.join(model_dir, "posterior_gmm.joblib"))
+
+    gmm_params = {
+        "m":  torch.from_numpy(gmm.m).to(device),        # (K,P)
+        "s2": torch.from_numpy(gmm.s2).to(device),       # (K,P)
+        "pi": torch.from_numpy(gmm.pi).to(device),       # (K,)
+    }
+
+    return mean, std, W, gmm_params
+
+@torch.no_grad()
+def assign_cluster_torch(mu, sigma, mean, std, W, gmm):
+    """
+    mu, sigma: (B,3,16,16) or (3,16,16) torch CUDA tensor
+
+    Returns:
+      cluster_id   : (B,)
+      confidence   : (B,)
+      latent_mu    : (B,3,16,16)
+      latent_sigma : (B,3,16,16)
+    """
+
+    # -------------------------------------------------
+    # shape normalize
+    # -------------------------------------------------
+    if mu.dim() == 3:
+        mu = mu.unsqueeze(0)
+        sigma = sigma.unsqueeze(0)
+
+    B = mu.shape[0]
+
+    mu = mu.view(B, -1)         # (B,768)
+    sigma = sigma.view(B, -1)   # (B,768)
+
+    # -------------------------------------------------
+    # dataset-level standardization
+    # -------------------------------------------------
+    mu_n = (mu - mean) / std
+    sigma_n = sigma / std
+
+    # -------------------------------------------------
+    # PCA transform
+    # -------------------------------------------------
+    mu_p = mu_n @ W.T                          # (B,P)
+    sigma2_p = (sigma_n ** 2) @ (W ** 2).T     # (B,P)
+
+    # -------------------------------------------------
+    # posterior log-prob (vectorized)
+    # -------------------------------------------------
+    # shapes:
+    #   mu_p       : (B,P)
+    #   gmm["m"]   : (K,P)
+    #   sigma2_p  : (B,P)
+    #   gmm["s2"] : (K,P)
+
+    diff2 = (mu_p[:, None, :] - gmm["m"][None, :, :]) ** 2   # (B,K,P)
+
+    log_prob = (
+        torch.log(gmm["pi"][None, :] + 1e-12)
+        - 0.5 * torch.sum(
+            (diff2 + sigma2_p[:, None, :]) / gmm["s2"][None, :, :]
+            + torch.log(gmm["s2"][None, :, :]),
+            dim=2
+        )
+    )  # (B,K)
+
+    r = torch.softmax(log_prob, dim=1)         # posterior
+    confidence, cluster_id = torch.max(r, dim=1)
+
+    # -------------------------------------------------
+    # PCA → latent space reconstruction
+    # -------------------------------------------------
+    W2 = W ** 2
+
+    mu_latent = (
+        gmm["m"][cluster_id] @ W
+    ) * std + mean                              # (B,768)
+
+    sigma2_latent = (
+        gmm["s2"][cluster_id] @ W2
+    ) * (std ** 2)                              # (B,768)
+
+    latent_mu = mu_latent.view(B, 3, 16, 16)
+    latent_sigma = torch.sqrt(sigma2_latent).view(B, 3, 16, 16)
+
+    return cluster_id, confidence, latent_mu, latent_sigma
+
+@torch.no_grad()
+def normalize_cluster_variance(latent_sigma, target_var=1.0, alpha=0.5, eps=1e-6):
+    """
+    latent_sigma: (B,3,16,16) torch.Tensor (CUDA)
+    """
+
+    # ---- per-sample average variance
+    var_mean = latent_sigma.pow(2).mean(dim=(1, 2, 3), keepdim=True)
+    # ---- scale factor to target variance
+    scale = torch.sqrt(target_var / (var_mean + eps))
+    # ---- soft calibration
+    scale = scale.pow(alpha)
+
+    return latent_sigma * scale
 
 def load_weights_with_shape_check(model, checkpoint, rank=0):
     model_state_dict = model.state_dict()

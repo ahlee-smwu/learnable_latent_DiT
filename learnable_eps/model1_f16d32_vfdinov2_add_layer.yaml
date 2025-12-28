@@ -1,8 +1,9 @@
 #ckpt_path: "../pretrained_weight/vavae-imagenet256-f16d32-dinov2.pt" # used for testing only, add your ckpt path if you want to test the model
 #init_weight: "../pretrained_weight/vavae-imagenet256-f16d32-dinov2.pt" # if you want to finetune va-vae on your own dataset, add your weight_init path
-#init_weight: "../vavae/logs/7th_2025-09-02T15-27-04_model1_f16d32_vfdinov2_add_layer/checkpoints/epoch=000024.ckpt"
 #init_weight: "vavae-imagenet256-f16d32-dinov2.pt"
-init_weight: "../pretrained_weight/epoch=000024.ckpt"
+#init_weight: "../pretrained_weight/ckpt_7th_vae/epoch=000024.ckpt" # va-vae weight
+init_weight: "../pretrained_weight/ckpt_6th_vae/model-step=131138.ckpt" # w/o va weight
+#init_weight: "../pretrained_weight/ckpt_6th_vae/last.ckpt" # w/o va weight
 
 model:
   base_learning_rate: 1.0e-04
@@ -48,7 +49,7 @@ model:
 data:
   target: main.DataModuleFromConfig
   params:
-    batch_size: 1 # batch size per GPU
+    batch_size: 8 # batch size per GPU
     wrap: true
     train:
 #      target: ldm.data.imagenet.ImageNetTrain
@@ -59,7 +60,8 @@ data:
 #        data_root: /mnt/HDD2/dataset/cifar-100/train # d26
 #        data_root: /mnt/SSD_raid1/tiny-imagenet-200/train # navi
 #        npy_file: /mnt/SSD_raid1/church_outdoor_train_lmdb_color_64.npy # navi
-         npy_file: /home/ivpl-d26/church_outdoor_train_lmdb_color_64.npy # d26
+#         npy_file: /home/ivpl-d26/church_outdoor_train_lmdb_color_64.npy # d26
+        npy_file: /home/ahlee/church_outdoor_train_lmdb_color_64.npy # a6000
     validation:
 #      target: ldm.data.imagenet.ImageNetValidation
       target: ldm.data.lsun.LSUNChurchesValidation
@@ -69,12 +71,13 @@ data:
 #        data_root: /mnt/HDD2/dataset/cifar-100/val # d26
 #        data_root: /mnt/SSD_raid1/tiny-imagenet-200/val # navi
 #        npy_file: /mnt/SSD_raid1/church_outdoor_train_lmdb_color_64.npy # navi
-         npy_file: /home/ivpl-d26/church_outdoor_train_lmdb_color_64.npy # d26
+#         npy_file: /home/ivpl-d26/church_outdoor_train_lmdb_color_64.npy # d26
+         npy_file: /home/ahlee/church_outdoor_train_lmdb_color_64.npy # a6000
 
 lightning:
   trainer:
-    devices: 4 #8 # number of GPUs, modify it according to your settings
-    num_nodes: 1 #4 # number of nodes, modify it according to your settings
+    devices: 1 #8 # number of GPUs, modify it according to your settings
+    num_nodes: 8 #4 # number of nodes, modify it according to your settings
     strategy: ddp_find_unused_parameters_true
     accelerator: gpu
     max_epochs: 200 #50

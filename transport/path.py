@@ -131,7 +131,7 @@ class ICPlan:
         return d_alpha_t * x1 + d_sigma_t * x0
     
     def plan(self, t, x0, x1):
-        xt = self.compute_xt(t, x0, x1)
+        xt = self.compute_xt(t, x0, x1) # if t=1: xt=x1
         ut = self.compute_ut(t, x0, x1, xt)
         return t, xt, ut
     

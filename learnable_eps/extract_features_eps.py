@@ -109,10 +109,16 @@ def main(args):
     model1.forward = types.MethodType(new_forward, model1)
 
     try:
-        model1.load_state_dict(torch.load(model1_config_merged.init_weight)['state_dict'], strict=True)
-        print(f"Loaded initial weights1 from {model1_config_merged.init_weight}")
-    except:
-        print(f"There is no initial weights1 to load.")
+        state_dict = torch.load(model1_config_merged.init_weight)['state_dict']
+        missing, unexpected = model1.load_state_dict(state_dict, strict=False)
+        if accelerator.is_main_process:
+            logger.info(f"Loaded pretrained model1 (partial) from {model1_config_merged.init_weight}")
+            if missing:
+                logger.info(f"Missing keys: {missing}")
+            if unexpected:
+                logger.info(f"Unexpected keys: {unexpected}")
+    except Exception as e:
+        print("There is no initial weights1 to load.")
         import traceback
         traceback.print_exc()
 

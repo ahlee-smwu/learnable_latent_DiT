@@ -18,7 +18,7 @@ data:
 
   # recommend to use default settings
   image_size: 256
-  num_classes: 1000
+  num_classes: 1 #1000
   num_workers: 8
   latent_norm: false #true # to normalize, channel-wise
   latent_multiplier: 1.0

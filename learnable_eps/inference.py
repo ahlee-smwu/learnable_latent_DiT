@@ -29,8 +29,13 @@ from tokenizer.vavae import VA_VAE
 from models.lightningdit import LightningDiT_models
 from transport import create_transport, Sampler
 from datasets.img_latent_dataset import ImgLatentDataset
+import torch as th
 import torch.nn.functional as F
 from safetensors.torch import save_file, load_file
+import numpy as np
+import joblib
+from torchvision.utils import make_grid
+from PIL import Image
 
 # sample function
 def do_sample(train_config, accelerator, ckpt_path=None, cfg_scale=None, model=None, vae=None, demo_sample_mode=False):
@@ -110,6 +115,7 @@ def do_sample(train_config, accelerator, ckpt_path=None, cfg_scale=None, model=N
         train_config['transport']['sample_eps'],
         use_cosine_loss = train_config['transport']['use_cosine_loss'] if 'use_cosine_loss' in train_config['transport'] else False,
         use_lognorm = train_config['transport']['use_lognorm'] if 'use_lognorm' in train_config['transport'] else False,
+        adaptive_eps = True
     )  # default: velocity;
     sampler = Sampler(transport)
     mode = train_config['sample']['mode']
@@ -217,44 +223,153 @@ def do_sample(train_config, accelerator, ckpt_path=None, cfg_scale=None, model=N
             return None
     else:
         for i in pbar:
-            # Sample inputs:
-            z = torch.randn(n, model.in_channels, image_size, image_size, device=device)
             y = torch.randint(0, train_config['data']['num_classes'], (n,), device=device)
 
-            # Sample input from pre-trained VA-VAE:
-            from safetensors.torch import load_file
-            file_path = "feature_output/model1_f16d32_vfdinov2_add_layer/lsun_train_128/latents_rank00_batch000001.safetensors"
-            data = load_file(file_path)
+            '''z load ver1'''
+            # z = torch.randn(n, model.in_channels, image_size, image_size, device=device)
+            '''z load ver2'''
+            # data = load_file("output/8_5th_lightningdit_b2_vavae_f16d3_lsun_non_eps/lightningdit-b-2-ckpt-1762000-euler-250/000192.safetensors")
+            # z = data["z"].to(device)
 
-            mu = data["mu"][i:i+1]  # shape: [B, H, W, C]
-            sigma = data["sigma"][i:i+1]  # shape: [B, H, W, C]
+            # Sample input from pre-trained VA-VAE or mean.pt:
+            batch_num = i * 100
 
-            mu = mu.permute(0, 3, 1, 2).contiguous()
-            sigma = sigma.permute(0, 3, 1, 2).contiguous()
+            '''latent load ver1: train-latent.safetensors'''
+            # file_path = f"feature_output/model1_6th_f16d32_vfdinov2_add_layer/lsun_train_128/latents_rank00_batch{batch_num:06d}.safetensors"
+            # # file_path = f"feature_output/model1_6th_f16d32_vfdinov2_add_layer/lsun_train_128/latents_rank00_batch003000.safetensors"
+            # data = load_file(file_path)
+            # mu = data["mu"].to(device)  # shape: [B, H, W, C]
+            # sigma = data["sigma"].to(device)  # shape: [B, H, W, C]
 
-            mu = mu.to(device)
-            sigma = sigma.to(device)
+            '''latent load ver2: mean.pt'''
+            # data = torch.load("feature_output/model1_6th_f16d32_vfdinov2_add_layer/mu_sigma_means.pt")
+            # mu = data["mu_spatial_mean"].unsqueeze(0).to(device)
+            # sigma = data["sigma_spatial_mean"].unsqueeze(0).to(device)
 
-            eps = torch.randn_like(mu)
-            z_org = mu + sigma * eps
+            @torch.no_grad()
+            def load_gmm_to_torch(model_dir, device):
+                """
+                Load trained GMM + PCA + stats and move everything to GPU
+                """
 
-            mu_up = F.interpolate(mu, scale_factor=8, mode="bilinear")
-            sigma_up = F.interpolate(sigma, scale_factor=8, mode="bilinear")
-            eps_up = torch.randn_like(mu_up)
-            mu_zero = torch.zeros(mu_up.shape, dtype=mu_up.dtype, device=mu_up.device) # for only sigma train model
-            z = mu_zero + sigma_up * eps_up
+                # ---- load stats
+                stats = np.load(os.path.join(model_dir, "standardize_stats.npz"))
+                mean = torch.from_numpy(stats["mean"]).to(device)
+                std = torch.from_numpy(stats["std"]).to(device)
+
+                # ---- load PCA
+                ipca = joblib.load(os.path.join(model_dir, "ipca.joblib"))
+                W = torch.from_numpy(ipca.components_.astype(np.float32)).to(device)  # (P,768)
+
+                # ---- load posterior GMM
+                gmm = joblib.load(os.path.join(model_dir, "posterior_gmm.joblib"))
+
+                gmm_params = {
+                    "m": torch.from_numpy(gmm.m).to(device),  # (K,P)
+                    "s2": torch.from_numpy(gmm.s2).to(device),  # (K,P)
+                    "pi": torch.from_numpy(gmm.pi).to(device),  # (K,)
+                }
+
+                return mean, std, W, gmm_params
+
+            @torch.no_grad()
+            def get_latents_from_gmm_stacked(cluster_ids=[6, 7]):
+                """
+                gmm: dict with keys 'm' (K,P), 's2' (K,P)
+                W   : PCA weight matrix (P,D)
+                mean: dataset mean (P,)
+                std : dataset std (P,)
+
+                cluster_ids: 가져올 클러스터 ID 리스트
+
+                Returns:
+                    latent_mu    : (len(cluster_ids),3,16,16)
+                    latent_sigma : (len(cluster_ids),3,16,16)
+                """
+                mean, std, W, gmm = load_gmm_to_torch('/home/ahlee/learnable_latent_DiT/learnable_eps/feature_output/model1_6th_f16d32_vfdinov2_add_layer/gmm2', 'cuda')
+                latent_mu_list = []
+                latent_sigma_list = []
+
+                W2 = W ** 2
+
+                for cid in cluster_ids:
+                    # PCA → latent space reconstruction
+                    mu_latent = (gmm["m"][cid] @ W) * std + mean
+                    sigma2_latent = (gmm["s2"][cid] @ W2) * (std ** 2)
+
+                    latent_mu_list.append(mu_latent.view(3, 16, 16))
+                    latent_sigma_list.append(torch.sqrt(sigma2_latent).view(3, 16, 16))
+
+                latent_mu = torch.stack(latent_mu_list, dim=0)
+                latent_sigma = torch.stack(latent_sigma_list, dim=0)
+                # ---- per-sample average variance
+                var_mean = latent_sigma.pow(2).mean(dim=(1, 2, 3), keepdim=True)
+                # ---- scale factor to target variance
+                scale = torch.sqrt(1.0 / (var_mean + 1e-6))
+                # ---- soft calibration
+                scale = scale.pow(0.5)
+
+                latent_sigma = latent_sigma * scale
+
+                return latent_mu, latent_sigma
+
+            '''latent load ver3: gmm'''
+
+            z_data = get_latents_from_gmm_stacked()
+            z_data = torch.from_numpy(z_data).to(device)  # ndarray → Tensor
+            ## norm ##
+            # stats = torch.load("feature_output/model1_6th_f16d32_vfdinov2_add_layer/mu_sigma_means.pt")
+            # mu_mean = stats["mu_spatial_mean"].to(device)  # shape [3]
+            # z_data = z_data - mu_mean[None, :, :, :]
+            z_data = z_data.permute(0, 3, 1, 2)  # (good(=21), 3, 16, 16)
+            z = F.interpolate(z_data, size=(128, 128), mode="nearest")
+            z = (z+torch.randn_like(z))/2
+            # print(z.shape, z.dtype)
+
+            # z_data = sample_one_per_good_component("feature_output/model1_6th_f16d32_vfdinov2_add_layer/gmm2",
+            #                                        trunc=2.5, seed=None)
+            # z_data = torch.from_numpy(z_data).to(device)  # ndarray → Tensor
+            # ## norm ##
+            # stats = torch.load("feature_output/model1_6th_f16d32_vfdinov2_add_layer/mu_sigma_means.pt")
+            # mu_mean = stats["mu_spatial_mean"].to(device)  # shape [3]
+            # z_data = z_data - mu_mean[None, :, :, :]
+            # z_data = z_data.permute(0, 3, 1, 2)  # (good(=21), 3, 16, 16)
+            # z = F.interpolate(z_data, size=(128, 128), mode="nearest")
+            # # print(z.shape, z.dtype)
+
+            '''normalization'''
+            # stats = torch.load("feature_output/model1_6th_f16d32_vfdinov2_add_layer/mu_sigma_means.pt")
+            # mu_mean = stats["mu_spatial_mean"].to(device)  # shape [3]
+            # mu_std = stats["mu_spatial_std"].to(device)  # shape [3]
+            # mu = mu - mu_mean[None, :, :, :]
+
+            '''x8 ver1''' # 안 나오던 원인: mode=bilinear
+            # mu, sigma shape: [B, H, W, C]
+            # mu = mu.permute(0, 3, 1, 2).contiguous()
+            # sigma = sigma.permute(0, 3, 1, 2).contiguous()
+            # mu_up = F.interpolate(mu, scale_factor=8, mode="nearest")
+            # sigma_up = F.interpolate(sigma, scale_factor=8, mode="nearest")
+            # sigma_n = torch.full_like(sigma_up, 1.0)
+            # mu_zero = torch.zeros(mu_up.shape, dtype=mu_up.dtype, device=mu_up.device) # for only sigma train model
+            # z = mu_up + sigma_up * torch.randn_like(mu_up)
+            # z_org = z
+            # # print(z.shape, z.dtype)
+
+            '''x8 ver2''' # 11th_sig05_2710000 ckpt 에서 잘 나옴
+            # mu_up = mu.unsqueeze(2).repeat(1, 1, 8, 1, 1)  # [1, 16, 16, 16, 3]
+            # mu_up = mu_up.view(-1, 128, 16, 3) # [1, 128, 16, 3]
+            # mu_up = mu_up.unsqueeze(3).repeat(1, 1, 1, 8, 1)  # [1, 128, 16, 16, 3]
+            # mu_up = mu_up.view(-1, 128, 128, 3) # [1, 128, 128, 3]
+            # sigma_05 = torch.full_like(mu_up, 0.5)
+            # z = mu_up + sigma_05 * torch.randn_like(mu_up)
+            # z = z.permute(0, 3, 1, 2).contiguous()
+            # # print("shape", z.shape)
+
+            '''interpolation w/ gaussian'''
+            # z = z + th.randn_like(z) / 2 # ~14th, 원래 의도는 아래인데, train할 때 이렇게 잘못해서,,  # x0 = x0 + th.randn_like(x0) /2
+            z = (z + th.randn_like(z)) / 2 # 15th~ 원래 의도한 interpolation
 
             print_with_prefix('Sample z from VA-VAE')
-
-            # visualize the z
-            z_img = torch.clamp((z + 1.0) * 127.5, 0, 255).permute(0, 2, 3, 1).to("cpu",
-                                                                                          dtype=torch.uint8).numpy()
-
-            # Save samples to disk as individual .png files
-            for i, sample in enumerate(z_img):
-                index = i * accelerator.num_processes + accelerator.process_index + total
-                Image.fromarray(sample).save(f"{sample_folder_dir}/{index:06d}_z.png")
-
 
             # Setup classifier-free guidance:
             if using_cfg:
@@ -267,35 +382,49 @@ def do_sample(train_config, accelerator, ckpt_path=None, cfg_scale=None, model=N
                 model_kwargs = dict(y=y)
                 model_fn = model.forward
 
-            samples = sample_fn(z, model_fn, **model_kwargs)[-1]
+            samples = sample_fn(z, model_fn, **model_kwargs)[-1] # 추론 코드에서 시점 t를 입력받지 않지만, t=노이즈시점 으로 구현돼있음
             # print('#########samples', samples.shape) # torch.Size([1, 3, 256, 256])
 
             if using_cfg:
                 samples, _ = samples.chunk(2, dim=0)  # Remove null class samples
 
-            '''save tensor file'''
-            z_cpu = z.contiguous().float().cpu()
-            z_org_cpu = z_org.contiguous().float().cpu()
-            samples_cpu = samples.contiguous().float().cpu()
-            save_file({
+            '''save file'''
+            # 1) tensor
+            z_cpu = z.contiguous().float().cpu()  # (21, 3, 128, 128)
+            samples_cpu = samples.contiguous().float().cpu()  # (21, 3, 128, 128)
+            save_file(
+                {
                     "z": z_cpu,
-                    "z_org": z_org_cpu,
-                    "output": samples_cpu },
-                f"{sample_folder_dir}/{index:06d}.safetensors"
+                    "samples": samples_cpu,
+                },
+                f"{sample_folder_dir}/{i:06d}_grid.safetensors"
             )
-            # print(samples) # -1~1 normalized, 범위를 넘는 것도 있는데? step이 커지면서 맞춰지는 건가
-            samples = torch.clamp((samples + 1.0) * 127.5, 0, 255).permute(0, 2, 3, 1).to("cpu",
-                                                                                         dtype=torch.uint8).numpy()
-            # print(samples)
-            # samples = (samples * latent_std) / latent_multiplier + latent_mean
-            # samples = vae.decode_to_images(samples)
-
-            # Save samples to disk as individual .png files
-            for i, sample in enumerate(samples):
-                index = i * accelerator.num_processes + accelerator.process_index + total
-                Image.fromarray(sample).save(f"{sample_folder_dir}/{index:06d}_output.png")
-            total += global_batch_size
-            accelerator.wait_for_everyone()
+            # 2) image_z
+            z_img = torch.clamp(
+                (z + 1.0) * 127.5, 0, 255
+            ).to(torch.uint8)
+            z_grid = make_grid(
+                z_img,
+                nrow=7,  # 동일하게 맞추는 게 좋음
+                padding=2
+            )
+            z_grid = z_grid.permute(1, 2, 0).cpu().numpy()
+            Image.fromarray(z_grid).save(
+                f"{sample_folder_dir}/{i:06d}_z_grid.png"
+            )
+            # 3) image_output
+            samples_img = torch.clamp(
+                (samples + 1.0) * 127.5, 0, 255
+            ).to(torch.uint8)
+            samples_grid = make_grid(
+                samples_img,
+                nrow=7,  # 21 = 7 × 3 (가장 예쁨)
+                padding=2
+            )
+            samples_grid = samples_grid.permute(1, 2, 0).cpu().numpy()
+            Image.fromarray(samples_grid).save(
+                f"{sample_folder_dir}/{i:06d}_output_grid.png"
+            )
 
     return sample_folder_dir
 
@@ -309,6 +438,91 @@ def load_config(config_path):
     with open(config_path, "r") as file:
         config = yaml.safe_load(file)
     return config
+
+# dataset GMM load
+class ZDataSampler:
+    def __init__(self, model_dir: str):
+        stats = np.load(f"{model_dir}/standardize_stats.npz")
+        self.mean = stats["mean"].astype(np.float32)  # (768,)
+        self.std  = stats["std"].astype(np.float32)   # (768,)
+
+        self.ipca = joblib.load(f"{model_dir}/ipca.joblib")
+        self.gmm  = joblib.load(f"{model_dir}/gmm.joblib")
+
+    def sample(self, n: int, seed: int | None = None) -> np.ndarray:
+        """
+        Returns: z_data of shape (n, 16, 16, 3) in float32
+        """
+        if seed is not None:
+            rng = np.random.RandomState(seed)
+            Yp, _ = self.gmm.sample(n, random_state=rng)  # (n, pca_dim)
+        else:
+            Yp, _ = self.gmm.sample(n)
+
+        # PCA inverse -> standardized 768-d
+        Hn = self.ipca.inverse_transform(Yp).astype(np.float32)  # (n, 768)
+
+        # de-standardize -> original mu-space
+        H = Hn * self.std[None, :] + self.mean[None, :]         # (n, 768)
+        Z = H.reshape(n, 16, 16, 3).astype(np.float32)
+        return Z
+
+import os, json
+import numpy as np
+import joblib
+
+def sample_one_per_good_component(
+    model_dir: str,
+    good_json: str = "good_components.json",
+    trunc: float | None = 2.5,
+    seed: int | None = None,
+) -> np.ndarray:
+    """
+    good_components.json에 있는 good 컴포넌트(예: 21개) 각각에서 1개씩 샘플링.
+    반환: z_data (G, 16, 16, 3) float32  (G = good component 개수)
+    """
+    rng = np.random.default_rng(seed)
+
+    # load stats/models
+    stats = np.load(os.path.join(model_dir, "standardize_stats.npz"))
+    mean = stats["mean"].astype(np.float32)  # (768,)
+    std  = stats["std"].astype(np.float32)   # (768,)
+
+    ipca = joblib.load(os.path.join(model_dir, "ipca.joblib"))
+    gmm  = joblib.load(os.path.join(model_dir, "gmm.joblib"))
+    if gmm.covariance_type != "diag":
+        raise ValueError(f"Expected diag GMM, got {gmm.covariance_type}")
+
+    # load good list
+    with open(os.path.join(model_dir, good_json), "r", encoding="utf-8") as f:
+        rep = json.load(f)
+    good = rep["good_components"]
+    if len(good) == 0:
+        raise ValueError("good_components is empty.")
+    good = np.array(good, dtype=np.int64)  # (G,)
+
+    G = good.shape[0]
+    D = gmm.means_.shape[1]
+
+    # one sample per component
+    mu = gmm.means_[good].astype(np.float32)                   # (G, D)
+    std_k = np.sqrt(np.maximum(gmm.covariances_[good], 1e-12)) # (G, D)
+
+    eps = rng.standard_normal(size=(G, D)).astype(np.float32)
+    if trunc is not None:
+        eps = np.clip(eps, -trunc, trunc)
+
+    Yp = mu + std_k * eps  # (G, D) PCA space samples
+
+    # inverse PCA -> standardized 768
+    Hn = ipca.inverse_transform(Yp).astype(np.float32)  # (G, 768)
+
+    # de-standardize -> original mu-space
+    H = Hn * std[None, :] + mean[None, :]              # (G, 768)
+
+    Z = H.reshape(G, 16, 16, 3).astype(np.float32)
+    return Z
+
 
 if __name__ == "__main__":
 
@@ -347,6 +561,9 @@ if __name__ == "__main__":
     print()
     # naive sample
     sample_folder_dir = do_sample(train_config, accelerator, ckpt_path=ckpt_dir, model=model, demo_sample_mode=args.demo)
+    # sample_folder_dir = 'tmp_resized'
+    # sample_folder_dir = 'output/14th_lightningdit_b2_vae_f16d3_lsun_interp05'
+
     
     if not args.demo:
         # calculate FID
