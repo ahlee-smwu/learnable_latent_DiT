@@ -175,13 +175,13 @@ class Transport:
             x1 - data point; [batch, *dim]
         """
 
-        # interpolation eps with gaussian dist
-        inter_mu = learned_mu # 5:5 interpolation
-        inter_sigma = learned_sigma # learned_sigma*1000 # e-6 -> e-3 쯤으로 맞춰봄
+        inter_mu = learned_mu
+        inter_sigma = learned_sigma
 
         # x0 = th.randn_like(x1) # original, normal gaussian
         x0 = inter_mu + inter_sigma * th.randn_like(learned_mu)
-        x0 = x0 + th.randn_like(x0) /2
+        # interpolation eps with gaussian dist
+        x0 = (x0 + th.randn_like(x0)) /2
 
         t0, t1 = self.check_interval(self.train_eps, self.sample_eps)  # t0: time 0, t1: time 1
 
@@ -212,7 +212,7 @@ class Transport:
         t = t.to(x1)
         return t, x0, x1
 
-    def sample_learnable_eps_t_adp(
+    def sample_learnable_eps_t_adp( # t 샘플링이 원래랑 다른 듯, 그래서 모델링이 실패했나
             self,
             x1,
             sp_timesteps=None,
@@ -258,6 +258,59 @@ class Transport:
         # 5. mix learned & noise
         # -------------------------------------------------
         x0 = w_learned * x0_learned + (1.0 - w_learned) * x0_noise
+
+        return t, x0, x1
+
+    def sample_learnable_eps_t_adp2(self, x1, sp_timesteps=None, shifted_mu=0, learned_mu=None, learned_sigma=None):
+        """Sampling x0 & t based on shape of x1 (if needed)
+          Args:
+            x1 - data point; [batch, *dim]
+        """
+
+        inter_mu = learned_mu
+        inter_sigma = learned_sigma
+
+        # 1. 시점 t 샘플링 (기존 로직 유지)
+        t0, t1 = self.check_interval(self.train_eps, self.sample_eps)
+
+        if not self.use_lognorm:
+            if self.partitial_train is not None and th.rand(1) < self.partial_ratio:
+                t = th.rand((x1.shape[0],)) * (self.partitial_train[1] - self.partitial_train[0]) + \
+                    self.partitial_train[0]
+            else:
+                t = th.rand((x1.shape[0],)) * (t1 - t0) + t0
+        else:
+            if not self.shift_lg:
+                if self.partitial_train is not None and th.rand(1) < self.partial_ratio:
+                    t = self.sample_in_range(0, 1, x1.shape[0], range_min=self.partitial_train[0],
+                                             range_max=self.partitial_train[1])
+                else:
+                    t = self.sample_logit_normal(0, 1, size=x1.shape[0]) * (t1 - t0) + t0
+            else:
+                assert self.partitial_train is None
+                t = self.sample_logit_normal(shifted_mu, 1, size=x1.shape[0]) * (t1 - t0) + t0
+
+        if sp_timesteps is not None:
+            t = th.rand((x1.shape[0],)) * (sp_timesteps[1] - sp_timesteps[0]) + sp_timesteps[0]
+
+        t = t.to(x1)
+
+        # 2. t에 따른 x0 가중치 계산 (수정된 부분)
+        t_view = t.view(-1, *([1] * (len(x1.shape) - 1)))
+
+        # learned_weight 계산
+        # t <= 0.8: 0.5에서 0으로 선형 감소
+        # t > 0.8: 0
+        learned_weight = th.where(
+            t_view <= 0.8,
+            0.5 * (1 - t_view / 0.8),
+            th.zeros_like(t_view)
+        )
+
+        learned_noise = inter_mu + inter_sigma * th.randn_like(learned_mu)
+        pure_gaussian = th.randn_like(x1)
+
+        x0 = learned_weight * learned_noise + (1 - learned_weight) * pure_gaussian
 
         return t, x0, x1
 
@@ -329,8 +382,8 @@ class Transport:
         if model_kwargs == None:
             model_kwargs = {}
 
-        # t, x0, x1 = self.sample_learnable_eps(x1, sp_timesteps, shifted_mu, learned_mu, learned_sigma)  # x0 생성에서 eps가 작용함, 이걸 learnable eps로 바꿈
-        t, x0, x1 = self.sample_learnable_eps_t_adp(x1, sp_timesteps, shifted_mu, learned_mu, learned_sigma)  # x0 생성에서 eps가 작용함, 이걸 learnable eps로 바꿈
+        t, x0, x1 = self.sample_learnable_eps(x1, sp_timesteps, shifted_mu, learned_mu, learned_sigma)  # x0 생성에서 eps가 작용함, 이걸 learnable eps로 바꿈
+        # t, x0, x1 = self.sample_learnable_eps_t_adp(x1, sp_timesteps, shifted_mu, learned_mu, learned_sigma)  # x0 생성에서 eps가 작용함, 이걸 learnable eps로 바꿈
         # x0: torch.Size([1, 256, 256, 3])
         # x1: torch.Size([1, 256, 256, 3])
         # t: torch.Size([1])
@@ -370,7 +423,65 @@ class Transport:
                 terms['loss'] = mean_flat(weight * ((model_output * sigma_t + x0) ** 2))
 
         return terms
-    
+
+    def training_losses_learnable_eps2(
+            self,
+            model,
+            x1,
+            model_kwargs=None,
+            sp_timesteps=None,
+            shifted_mu=0,
+            learned_mu=None,
+            learned_sigma=None
+    ):
+        """Loss for training the score model
+        Args:
+        - model: backbone model; could be score, noise, or velocity
+        - x1: datapoint
+        - model_kwargs: additional arguments for the model # y (label)
+        """
+        if model_kwargs == None:
+            model_kwargs = {}
+
+        # t, x0, x1 = self.sample_learnable_eps(x1, sp_timesteps, shifted_mu, learned_mu, learned_sigma)  # x0 생성에서 eps가 작용함, 이걸 learnable eps로 바꿈
+        t, x0, x1 = self.sample_learnable_eps_t_adp2(x1, sp_timesteps, shifted_mu, learned_mu, learned_sigma)  # x0 생성에서 eps가 작용함, 이걸 learnable eps로 바꿈
+        # x0,1: b,32,16,16
+        # t: torch.Size([1])
+
+        t, xt, ut = self.path_sampler.plan(t, x0, x1) # if t=1: xt=x1
+        # t: time, xt: target of time t(=forward xt), ut: x0-x1, xt랑 관련없음
+        import torch
+        # torch.save({"x0": x0, "x1": x1, "xt": xt, "t": t}, "dit_tensor2_non_eps.pt")
+
+        model_output = model(xt, t, **model_kwargs)  # pred of model
+        B, *_, C = xt.shape
+        assert model_output.size() == (B, *xt.size()[1:-1], C)
+
+        terms = {}
+        terms['pred'] = model_output
+        if self.model_type == ModelType.VELOCITY: # LightningDiT
+            terms['loss'] = mean_flat(((model_output - ut) ** 2))
+            if self.use_cosine_loss:
+                terms['cos_loss'] = mean_flat(1 - th.nn.functional.cosine_similarity(model_output, ut, dim=1))
+        else:
+            _, drift_var = self.path_sampler.compute_drift(xt, t)
+            sigma_t, _ = self.path_sampler.compute_sigma_t(path.expand_t_like_x(t, xt))
+            if self.loss_type in [WeightType.VELOCITY]:
+                weight = (drift_var / sigma_t) ** 2
+            elif self.loss_type in [WeightType.LIKELIHOOD]:
+                weight = drift_var / (sigma_t ** 2)
+            elif self.loss_type in [WeightType.NONE]:
+                weight = 1
+            else:
+                raise NotImplementedError()
+
+            if self.model_type == ModelType.NOISE:
+                terms['loss'] = mean_flat(weight * ((model_output - x0) ** 2))
+            else:
+                terms['loss'] = mean_flat(weight * ((model_output * sigma_t + x0) ** 2))
+
+        return terms
+
 
     def get_drift(
         self

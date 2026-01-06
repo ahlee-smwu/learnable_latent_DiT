@@ -149,18 +149,22 @@ def main(args):
             print(f'Saved {save_filename}')
 
     # Calculate latents stats
-    dist.barrier()
-    if rank == 0:
-        dataset = ImgLatentDataset(output_dir, latent_norm=True)
-    dist.barrier()
-    dist.destroy_process_group()
+    dataset = ImgLatentDataset(output_dir, latent_norm=True)
+
+    # dist.barrier()
+    # if rank == 0:
+    #     dataset = ImgLatentDataset(output_dir, latent_norm=True)
+    # dist.barrier()
+    # dist.destroy_process_group()
+    print('Process is done!')
+
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--data_path", type=str, default='/path/to/your/data')
-    parser.add_argument("--data_split", type=str, default='imagenet_train')
-    parser.add_argument("--output_path", type=str, default="/path/to/your/output")
+    parser.add_argument("--data_path", type=str, default='/mnt/HDD_raid1/lsun/church_outdoor_val')
+    parser.add_argument("--data_split", type=str, default='lsun_val')
+    parser.add_argument("--output_path", type=str, default="feature_output")
     parser.add_argument("--config", type=str, default="config_details.yaml")
     parser.add_argument("--image_size", type=int, default=256)
     parser.add_argument("--batch_size", type=int, default=20)
