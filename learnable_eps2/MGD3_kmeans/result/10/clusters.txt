@@ -1,0 +1,11 @@
+Class 0
+  Cluster 00: 13950 samples
+  Cluster 01: 12439 samples
+  Cluster 02: 9361 samples
+  Cluster 03: 13522 samples
+  Cluster 04: 12842 samples
+  Cluster 05: 12751 samples
+  Cluster 06: 15405 samples
+  Cluster 07: 11781 samples
+  Cluster 08: 8896 samples
+  Cluster 09: 15280 samples

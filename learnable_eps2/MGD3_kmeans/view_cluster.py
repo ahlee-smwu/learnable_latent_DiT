@@ -255,7 +255,7 @@ def calculate_psnr_between_folders(original_folder, processed_folder):
         ]
         return [future.result() for future in as_completed(futures)]
 
-def view_cluster(config_path, ds_config, model_type, output_path):
+def view_cluster(config_path, ds_config, model_type):
     # -----------------------------
     # single-process setup
     # -----------------------------
@@ -296,6 +296,8 @@ def view_cluster(config_path, ds_config, model_type, output_path):
     # -----------------------------
     # Load cluster centers
     # -----------------------------
+    output_path = f"{ds_config['kmeans']['output_dir']}/{ds_config['kmeans']['num_clusters']}"
+
     with open(os.path.join(output_path, "kmeans_clusters.pkl"), "rb") as f:
         ckpt = pickle.load(f)
 
@@ -357,8 +359,7 @@ if __name__ == "__main__":
     parser.add_argument('--config_path', type=str, default='model1_f16d32.yaml')
     parser.add_argument('--ds_config_path', type=str, default='model2_xl_vavae_f16d32.yaml')
     parser.add_argument('--model_type', type=str, default='vavae')
-    parser.add_argument('--output_path', type=str, default='MGD3_kmeans/result/20')
     args = parser.parse_args()
     ds_config = load_config(args.ds_config_path)
 
-    view_cluster(config_path=args.config_path, ds_config=ds_config, model_type=args.model_type, output_path=args.output_path)
+    view_cluster(config_path=args.config_path, ds_config=ds_config, model_type=args.model_type)

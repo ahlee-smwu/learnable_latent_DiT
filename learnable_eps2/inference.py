@@ -259,7 +259,14 @@ def do_sample(train_config, accelerator, ckpt_path=None, cfg_scale=None, model=N
             # Save samples to disk as individual .png files
             for i, sample in enumerate(samples):
                 index = i * accelerator.num_processes + accelerator.process_index + total
-                Image.fromarray(sample).save(f"{sample_folder_dir}/{index:06d}.png")
+                cls = y[:samples.shape[0]][i].item()
+                cid = cluster_ids[:samples.shape[0]][i].item()
+                class_dir = os.path.join(sample_folder_dir, f"class_{cls}")
+                cluster_dir = os.path.join(class_dir, f"cluster_{cid}")
+                os.makedirs(cluster_dir, exist_ok=True)
+                filename = f"{index:06d}.png"
+                Image.fromarray(sample).save(os.path.join(cluster_dir, filename))
+
             total += global_batch_size
             accelerator.wait_for_everyone()
 
