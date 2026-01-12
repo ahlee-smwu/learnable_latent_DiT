@@ -9,3 +9,7 @@ learnable_eps/tensorboard_logs
 logs
 *.pyc
 __pycache__/
+learnable_eps2/GMM/result_gmm/
+learnable_eps2/feature_output/
+**/*shard*.safetensors
+.idea/

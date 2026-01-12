@@ -37,7 +37,7 @@ import pickle
 
 def do_kmeans(train_config, accelerator):
     """
-    KMeans result on ImgLatentDataset.
+    KMeans result_gmm on ImgLatentDataset.
     - Dataset handles latent_norm / latent_multiplier
     - This code ONLY clusters given latents
     """
@@ -115,7 +115,7 @@ def do_kmeans(train_config, accelerator):
     for cls in tqdm(sorted(feats_per_class.keys()), disable=not is_main):
         X = np.stack(feats_per_class[cls])  # (Nc, D)
 
-        # optional PCA (purely for result stability)
+        # optional PCA (purely for result_gmm stability)
         if use_pca:
             pca = PCA(n_components=pca_dim)
             X_km = pca.fit_transform(X)
