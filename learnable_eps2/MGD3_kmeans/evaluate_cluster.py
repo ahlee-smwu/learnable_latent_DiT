@@ -243,7 +243,7 @@ def cluster_eval_main(ds_config, output_path, device="cuda"):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--ds_config_path', type=str, default='model2_xl_vavae_f16d32.yaml')
-    parser.add_argument('--output_path', type=str, default='MGD3_kmeans/result/20')
+    parser.add_argument('--output_path', type=str, default='MGD3_kmeans/result_gmm/20')
     args = parser.parse_args()
 
     with open(args.ds_config_path, 'r') as f:

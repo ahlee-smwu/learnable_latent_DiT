@@ -1,7 +1,7 @@
 # we recommend to read config_details.yaml first.
 
 # for inference
-ckpt_path: 'output/1st_lightningdit_xl_vavae_f16d32_k10/checkpoints/0036000.pt' # <---- download our pre-trained lightningdit or your own checkpoint
+ckpt_path: 'output/1st_lightningdit_xl_vavae_f16d32_gmm30/checkpoints/0159000.pt' # <---- download our pre-trained lightningdit or your own checkpoint
 
 data:
   data_path: "feature_output/model1_f16d32/lsun_train_256"
@@ -41,15 +41,15 @@ model:
 # recommend to use default settings
 train:
   max_steps: 80000
-  global_batch_size: 128
+  global_batch_size: 32
   global_seed: 0
   output_dir: 'output'
-  exp_name: '1st_lightningdit_xl_vavae_f16d32_k30' # <---- experiment name, set as you like
+  exp_name: '1st_lightningdit_xl_vavae_f16d32_gmm30' # <---- experiment name, set as you like
   ckpt: null
   log_every: 100
   ckpt_every: 3000
   weight_init: '../pretrained_weight/lightningdit-xl-imagenet256-64ep.pt'
-  resume: false
+  resume: true #false
 optimizer:
   lr: 0.0002
   beta2: 0.95
@@ -80,17 +80,29 @@ sample:
                   #       we enable cfg interval, which reduces the negative effects of large cfg on high-noise parts. This means larger cfg can be utilized
   
   # recommend to use default settings
-  per_proc_batch_size: 64
-  fid_num: 50000
+  per_proc_batch_size: 128
+  fid_num: 90000 #50000
   cfg_interval_start: 0.11
   timestep_shift: 0.3
 
-# result
+# clustering
+cluster_type: gmm # kmeans, gmm
+
 kmeans:
-    num_clusters: 30 # 10,20,50
+    num_clusters: 10 # 10,20,50
     use_pca: false
     pca_dim: 4
     closest_point: false
     output_dir: 'MGD3_kmeans/result' # for fit
-    exp_name: 'kmeans'
-    load_dir: 'MGD3_kmeans/result/10' # for usage
+    exp_name: 'kmeans' # 안 쓰는 듯?
+    load_dir: 'MGD3_kmeans/result_gmm/30' # for usage
+
+gmm:
+    num_clusters: 30 # 10,20,50
+    use_pca: true
+    pca_dim: 256
+    cov_type: diag # diag, full
+    init_dir: 'MGD3_kmeans/result' # kmeans로 초기화함
+    output_dir: 'GMM/result_gmm' # for fit
+#    exp_name: 'kmeans' # 안 쓰는 듯?
+    load_dir: 'GMM/result_gmm/30_diag' # for usage

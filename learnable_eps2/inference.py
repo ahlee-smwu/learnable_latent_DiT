@@ -23,7 +23,7 @@ from models.lightningdit import LightningDiT_models
 from transport import create_transport, Sampler
 from datasets.img_latent_dataset import ImgLatentDataset
 
-def sample_random_clusters(
+def sample_random_clusters_kmeans(
     centers: dict,
     batch_size: int,
     latent_shape: tuple,
@@ -45,6 +45,52 @@ def sample_random_clusters(
 
     return cluster_means, idx
 
+def sample_random_clusters_gmm(
+        means: dict,
+        covs: dict,
+        weights: dict,
+        pca_info: dict,
+        batch_size: int,
+        latent_shape: tuple,
+        device=None,
+):
+    C, H, W = latent_shape
+    # D = 8192, PCA_dim = 256 가정
+
+    # 1. 데이터 통합
+    all_means = torch.cat([m for m in means.values()], dim=0)  # (total_K, 8192)
+    all_covs = torch.cat([c for c in covs.values()], dim=0)  # (total_K, 256)
+    all_weights = torch.cat([w for w in weights.values()], dim=0)  # (total_K,)
+
+    pca_components_list = []
+    for cls, info in pca_info.items():
+        num_clusters = means[cls].shape[0]
+        # info["components"] shape: (256, 8192)
+        pca_components_list.append(info["components"].unsqueeze(0).expand(num_clusters, -1, -1))
+
+    all_pca_comps = torch.cat(pca_components_list, dim=0)  # (total_K, 256, 8192)
+
+    # 2. Mixture weight 기반 샘플링
+    probs = all_weights / all_weights.sum()
+    idx = torch.multinomial(probs, batch_size, replacement=True)
+
+    # 3. 선택된 클러스터 파라미터
+    m_orig = all_means[idx]  # (batch_size, 8192)
+    v_pca = all_covs[idx]  # (batch_size, 256)
+    V = all_pca_comps[idx]  # (batch_size, 256, 8192)
+
+    # 4. 결과 도출
+    # Mean: 학습 코드에서 이미 inverse_transform 되었으므로 그대로 사용
+    cluster_means = m_orig.view(batch_size, C, H, W)
+
+    # Sigma: PCA 공간의 분산을 원본 공간으로 투영 (v_pca @ V^2)
+    # v_pca.unsqueeze(1) shape: (B, 1, 256)
+    # V**2 shape: (B, 256, 8192)
+    # Result: (B, 1, 8192)
+    v_orig = torch.bmm(v_pca.unsqueeze(1), V ** 2).squeeze(1)
+    cluster_sigma = torch.sqrt(v_orig + 1e-6).view(batch_size, C, H, W)
+
+    return cluster_means, cluster_sigma, idx
 
 # sample function
 def do_sample(train_config, accelerator, ckpt_path=None, cfg_scale=None, model=None, vae=None, demo_sample_mode=False):
@@ -189,11 +235,52 @@ def do_sample(train_config, accelerator, ckpt_path=None, cfg_scale=None, model=N
     latent_std = latent_std.clone().detach().to(device)
 
     '''Clustering'''
-    cluster_path = train_config['kmeans']['load_dir']
-    with open(os.path.join(cluster_path, "kmeans_clusters.pkl"), "rb") as f:
-        ckpt = pickle.load(f)
-    centers = {cls: torch.from_numpy(mu).to(device=device, dtype=torch.float32) for cls, mu in ckpt["centers"].items()}
-    # ckpt["centers"]: dict: class → (K, D)
+    cluster_type = train_config['cluster_type']
+    if accelerator.process_index == 0:
+        print_with_prefix(f"Clustering: {cluster_type}")
+
+    if cluster_type == 'kmeans':
+        cluster_path = train_config['kmeans']['load_dir']
+        with open(os.path.join(cluster_path, "kmeans_clusters.pkl"), "rb") as f:
+            ckpt = pickle.load(f)
+        kmeans_centers = {cls: torch.from_numpy(mu).to(device=device, dtype=torch.float32) for cls, mu in ckpt["centers"].items()}
+        # ckpt["centers"]: dict: class → (K, D)
+        if accelerator.process_index == 0:
+            print_with_prefix(f"Cluster data from: {cluster_path}")
+
+    elif cluster_type == 'gmm':
+        cluster_path = train_config['gmm']['load_dir']
+        with open(os.path.join(cluster_path, "gmm_clusters.pkl"), "rb") as f:
+            ckpt = pickle.load(f)
+        # ---- Mean (μ): class -> (K, D)
+        gmm_means = {
+            cls: torch.from_numpy(mu).to(device=device, dtype=torch.float32)
+            for cls, mu in ckpt["means"].items()
+        }
+        # ---- Covariance (Σ)
+        # diag: (K, D)
+        # full: (K, D, D)
+        gmm_covs = {
+            cls: torch.from_numpy(cov).to(device=device, dtype=torch.float32)
+            for cls, cov in ckpt["covs"].items()
+        }
+        # ---- Mixture weight (π)
+        gmm_weights = {
+            cls: torch.from_numpy(w).to(device=device, dtype=torch.float32)
+            for cls, w in ckpt["weights"].items()
+        }
+        # ---- PCA components (class-wise)
+        gmm_pca = {
+            cls: {
+                "components": torch.from_numpy(pca_dict["components"])
+                .to(device=device, dtype=torch.float32),
+                "mean": torch.from_numpy(pca_dict["mean"])
+                .to(device=device, dtype=torch.float32),
+            }
+            for cls, pca_dict in ckpt["pca_components"].items()
+        }
+        gmm_labels = ckpt.get("labels", None)
+        print_with_prefix(f"Cluster data from: {cluster_path}")
 
     if demo_sample_mode:
         if accelerator.process_index == 0:
@@ -231,10 +318,19 @@ def do_sample(train_config, accelerator, ckpt_path=None, cfg_scale=None, model=N
             # z = torch.randn(n, model.in_channels, latent_size, latent_size, device=device)
             y = torch.randint(0, train_config['data']['num_classes'], (n,), device=device)
 
-            cluster_means, cluster_ids = sample_random_clusters(centers, batch_size=n, latent_shape=(model.in_channels, latent_size, latent_size), device=device)
-            cluster_sigma = torch.ones_like(cluster_means)
-            eps = torch.randn_like(cluster_means)
+            if cluster_type == 'kmeans':
+                cluster_means, cluster_ids = sample_random_clusters_kmeans(kmeans_centers, batch_size=n, latent_shape=(model.in_channels, latent_size, latent_size), device=device)
+                cluster_sigma = torch.ones_like(cluster_means)
+            elif cluster_type == 'gmm':
+                cluster_means, cluster_sigma, cluster_ids = sample_random_clusters_gmm(
+                    gmm_means, gmm_covs, gmm_weights, gmm_pca,
+                    batch_size=n,
+                    latent_shape=(model.in_channels, latent_size, latent_size),
+                    device=device
+                )
+                cluster_sigma = torch.ones_like(cluster_means)
 
+            eps = torch.randn_like(cluster_means)
             cluster = cluster_means + (eps * cluster_sigma)
             z = (0.5 * cluster) + (0.5 * eps)
             
@@ -258,7 +354,7 @@ def do_sample(train_config, accelerator, ckpt_path=None, cfg_scale=None, model=N
 
             # Save samples to disk as individual .png files
             for i, sample in enumerate(samples):
-                index = i * accelerator.num_processes + accelerator.process_index + total
+                index = i * accelerator.num_processes + accelerator.process_index + total + 40320
                 cls = y[:samples.shape[0]][i].item()
                 cid = cluster_ids[:samples.shape[0]][i].item()
                 class_dir = os.path.join(sample_folder_dir, f"class_{cls}")
