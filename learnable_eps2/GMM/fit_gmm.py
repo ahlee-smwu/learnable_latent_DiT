@@ -1,3 +1,9 @@
+import sys
+import os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../'))  # 프로젝트 루트까지
+
+from datasets.img_latent_dataset import ImgLatentDataset
+
 import torch
 from torch.utils.data import DataLoader
 import numpy as np
@@ -80,6 +86,25 @@ def do_gmm_clustering(train_config, accelerator):
     feats_per_class = defaultdict(list)
     for feat, cls in zip(features, labels):
         feats_per_class[int(cls)].append(feat)
+
+    '''
+    if accelerator.is_main_process:
+        print("\n=== Top 10 smallest classes ===")
+        small_classes = sorted(feats_per_class.items(), key=lambda x: len(x[1]))[:10]
+        for cls, feats in small_classes:
+            print(f"Class {cls}: {len(feats)} samples")
+    === Top 10 smallest classes ===
+    Class 165: 732 samples
+    Class 175: 738 samples
+    Class 167: 754 samples
+    Class 268: 755 samples
+    Class 152: 772 samples
+    Class 158: 860 samples
+    Class 531: 889 samples
+    Class 596: 891 samples
+    Class 740: 908 samples
+    Class 841: 931 samples
+    '''
 
     clusters_means = {}
     clusters_covs = {}
@@ -164,4 +189,5 @@ if __name__ == "__main__":
 
     accelerator = Accelerator()
     train_config = load_config(args.config)
+
     do_gmm_clustering(train_config, accelerator)

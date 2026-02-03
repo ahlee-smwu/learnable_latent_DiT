@@ -50,6 +50,7 @@ def sample_random_clusters_gmm(
         covs: dict,
         weights: dict,
         pca_info: dict,
+        use_weight: bool,
         batch_size: int,
         latent_shape: tuple,
         device=None,
@@ -70,9 +71,15 @@ def sample_random_clusters_gmm(
 
     all_pca_comps = torch.cat(pca_components_list, dim=0)  # (total_K, 256, 8192)
 
-    # 2. Mixture weight 기반 샘플링
-    probs = all_weights / all_weights.sum()
-    idx = torch.multinomial(probs, batch_size, replacement=True)
+    # 2. 클러스터 선택
+    # 1) Mixture weight 기반 샘플링
+    if use_weight == 'true':
+        probs = all_weights / all_weights.sum()
+        idx = torch.multinomial(probs, batch_size, replacement=True)
+    # 2) 랜덤 샘플링
+    else:
+        total_clusters = len(all_means)
+        idx = torch.randint(0, total_clusters, (batch_size,), device=device)
 
     # 3. 선택된 클러스터 파라미터
     m_orig = all_means[idx]  # (batch_size, 8192)
@@ -280,6 +287,7 @@ def do_sample(train_config, accelerator, ckpt_path=None, cfg_scale=None, model=N
             for cls, pca_dict in ckpt["pca_components"].items()
         }
         gmm_labels = ckpt.get("labels", None)
+        gmm_use_weight = train_config['gmm']['use_weight']
         print_with_prefix(f"Cluster data from: {cluster_path}")
 
     if demo_sample_mode:
@@ -324,11 +332,13 @@ def do_sample(train_config, accelerator, ckpt_path=None, cfg_scale=None, model=N
             elif cluster_type == 'gmm':
                 cluster_means, cluster_sigma, cluster_ids = sample_random_clusters_gmm(
                     gmm_means, gmm_covs, gmm_weights, gmm_pca,
+                    use_weight = gmm_use_weight,
                     batch_size=n,
                     latent_shape=(model.in_channels, latent_size, latent_size),
                     device=device
                 )
-                cluster_sigma = torch.ones_like(cluster_means)
+                # cluster_sigma = torch.ones_like(cluster_means)
+                # cluster_sigma = cluster_sigma * 1.3  # x1.3 weighting
 
             eps = torch.randn_like(cluster_means)
             cluster = cluster_means + (eps * cluster_sigma)
@@ -354,7 +364,7 @@ def do_sample(train_config, accelerator, ckpt_path=None, cfg_scale=None, model=N
 
             # Save samples to disk as individual .png files
             for i, sample in enumerate(samples):
-                index = i * accelerator.num_processes + accelerator.process_index + total + 40320
+                index = i * accelerator.num_processes + accelerator.process_index + total
                 cls = y[:samples.shape[0]][i].item()
                 cid = cluster_ids[:samples.shape[0]][i].item()
                 class_dir = os.path.join(sample_folder_dir, f"class_{cls}")

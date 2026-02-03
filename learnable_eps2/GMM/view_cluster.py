@@ -40,6 +40,7 @@ import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 import numpy as np
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 def load_config(config_path):
     with open(config_path, "r") as file:
@@ -110,7 +111,7 @@ def decode_gmm_means(
 
     return gmm_mean_images
 
-def collect_cluster_samples(
+def collect_cluster_samples( # 클러스터에 속하는 19개의 데이터를 선택 # 그리드 시각화용
     loader,
     model,
     centers,
@@ -168,6 +169,75 @@ def collect_cluster_samples(
                     cluster_samples[cls][k].append(Image.fromarray(img))
 
     return cluster_samples, cluster_counts
+
+def collect_all_and_save_by_cluster( # 클러스터에 속하는 모든 데이터를 분류 # 클러스터별 데이터셋 분류용
+    loader,
+    model,
+    centers,
+    latent_mean,
+    latent_std,
+    latent_multiplier,
+    device,
+    save_root,
+    latent_shape=(32, 16, 16)
+):
+    """
+    모든 로더 데이터를 순회하며 Latent를 디코딩하고,
+    해당하는 클러스터(뿌리) 폴더별로 개별 이미지를 저장함.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    executor = ThreadPoolExecutor(max_workers=8)
+    model.eval()
+    base_dir = save_root
+    os.makedirs(base_dir, exist_ok=True)
+
+    latent_mean = latent_mean.to(device)
+    latent_std = latent_std.to(device)
+
+    img_idx = 0
+    with torch.no_grad():
+        for x, y in tqdm(loader, desc="Saving all real samples by cluster"):
+            x = x.to(device, non_blocking=True)
+            y = y.to(device, non_blocking=True)
+
+            B = x.size(0)
+            latents_flat = x.view(B, -1)
+
+            # ---------- cluster assignment ----------
+            cluster_ids = torch.empty(B, dtype=torch.long, device=device)
+
+            for cls in torch.unique(y):
+                mask = y == cls
+                mu = centers[int(cls.item())]  # (K, D)
+
+                dists = ((latents_flat[mask][:, None] - mu[None]) ** 2).sum(-1)
+                cluster_ids[mask] = dists.argmin(dim=1)
+
+            # ---------- batch decode ----------
+            z = x / latent_multiplier
+            z = z * latent_std + latent_mean
+            imgs = model.decode(z)
+
+            imgs = torch.clamp(127.5 * imgs + 128.0, 0, 255)
+            imgs = imgs.permute(0, 2, 3, 1).cpu().numpy().astype(np.uint8)
+
+            # ---------- save (still sync, but correct) ----------
+            for i in range(B):
+                cls = int(y[i].item())
+                k = int(cluster_ids[i].item())
+
+                cluster_dir = os.path.join(
+                    save_root, f"class_{cls}", f"cluster_{k}"
+                )
+                os.makedirs(cluster_dir, exist_ok=True)
+
+                save_path = os.path.join(cluster_dir, f"img_{img_idx:07d}.png")
+                executor.submit(save_image, imgs[i], save_path)
+                img_idx += 1
+
+    executor.shutdown(wait=True)
+    print_with_prefix(f"✅ All real samples saved in: {base_dir}")
 
 def tsne(
     latents,              # (N, D)
@@ -532,10 +602,11 @@ def view_cluster(config_path, ds_config, model_type, tsne_color_mode):
 
     loader = DataLoader(
         dataset,
-        batch_size=64,
+        batch_size=128,
         shuffle=True,
-        num_workers=ds_config['data']['num_workers'],
-        pin_memory=True
+        num_workers=16,
+        pin_memory=True,
+        persistent_workers=True
     )
 
     # -----------------------------
@@ -562,43 +633,66 @@ def view_cluster(config_path, ds_config, model_type, tsne_color_mode):
     # -----------------------------
     # (1) Decode GMM means & save mean grid
     # -----------------------------
-    cluster_mean_images = decode_gmm_means(
-        model=model,
-        gmm_means=gmm_means,
-        latent_mean=latent_stats["mean"],
-        latent_std=latent_stats["std"],
-        latent_multiplier=ds_config['data'].get('latent_multiplier', 0.18215),
-        latent_shape=(32, 16, 16),
-        device=device,
-        save_root=output_path
-    )
+    # cluster_mean_images = decode_gmm_means(
+    #     model=model,
+    #     gmm_means=gmm_means,
+    #     latent_mean=latent_stats["mean"],
+    #     latent_std=latent_stats["std"],
+    #     latent_multiplier=ds_config['data'].get('latent_multiplier', 0.18215),
+    #     latent_shape=(32, 16, 16),
+    #     device=device,
+    #     save_root=output_path
+    # )
 
     # -----------------------------
     # (2) t-SNE
     # -----------------------------
-    all_latents, all_labels = [], []
-
-    with torch.no_grad():
-        for latents, y in tqdm(loader, desc="Collect latents"):
-            latents = latents.view(latents.size(0), -1)
-            all_latents.append(latents.cpu().numpy())
-            all_labels.append(y.numpy())
-
-    all_latents = np.concatenate(all_latents, axis=0)
-    all_labels = np.concatenate(all_labels, axis=0)
-
-    tsne(
-        latents=all_latents,
-        labels=all_labels,
-        gmm_means_dict=gmm_means,
-        save_path=os.path.join(output_path, f"tsne_{tsne_color_mode}.png"),
-        color_mode=tsne_color_mode
-    )
+    # all_latents, all_labels = [], []
+    #
+    # with torch.no_grad():
+    #     for latents, y in tqdm(loader, desc="Collect latents"):
+    #         latents = latents.view(latents.size(0), -1)
+    #         all_latents.append(latents.cpu().numpy())
+    #         all_labels.append(y.numpy())
+    #
+    # all_latents = np.concatenate(all_latents, axis=0)
+    # all_labels = np.concatenate(all_labels, axis=0)
+    #
+    # tsne(
+    #     latents=all_latents,
+    #     labels=all_labels,
+    #     gmm_means_dict=gmm_means,
+    #     save_path=os.path.join(output_path, f"tsne_{tsne_color_mode}.png"),
+    #     color_mode=tsne_color_mode
+    # )
 
     # -----------------------------
     # (3) Collect real samples per GMM cluster & save real grid
     # -----------------------------
-    cluster_samples, cluster_counts = collect_cluster_samples(
+    # cluster_samples, cluster_counts = collect_cluster_samples(
+    #     loader=loader,
+    #     model=model,
+    #     centers={
+    #         cls: torch.from_numpy(mu).float().to(device)
+    #         for cls, mu in gmm_means.items()
+    #     },
+    #     latent_mean=latent_stats["mean"],
+    #     latent_std=latent_stats["std"],
+    #     latent_multiplier=ds_config['data'].get('latent_multiplier', 0.18215),
+    #     device=device
+    # )
+    #
+    # save_real_cluster_sample_grids(
+    #     cluster_samples,
+    #     cluster_mean_images,
+    #     save_root=output_path
+    # )
+
+    # -----------------------------
+    # (4) Collect ALL real samples per GMM cluster & save real images in folder
+    # -----------------------------
+    folder_path = '/mnt/HDD_raid1/lsun/church_outdoor_train_gmm/30_diag2/'
+    collect_all_and_save_by_cluster(
         loader=loader,
         model=model,
         centers={
@@ -608,21 +702,17 @@ def view_cluster(config_path, ds_config, model_type, tsne_color_mode):
         latent_mean=latent_stats["mean"],
         latent_std=latent_stats["std"],
         latent_multiplier=ds_config['data'].get('latent_multiplier', 0.18215),
-        device=device
-    )
-
-    save_real_cluster_sample_grids(
-        cluster_samples,
-        cluster_mean_images,
-        save_root=output_path
+        device=device,
+        save_root=folder_path,
+        latent_shape=(32, 16, 16)
     )
 
     # -----------------------------
-    # (4) Statics
+    # (5) Statics
     # -----------------------------
-    print_cluster_statistics(cluster_counts)
-
-    print_with_prefix("GMM cluster visualization DONE ✅")
+    # print_cluster_statistics(cluster_counts)
+    #
+    # print_with_prefix("GMM cluster visualization DONE ✅")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

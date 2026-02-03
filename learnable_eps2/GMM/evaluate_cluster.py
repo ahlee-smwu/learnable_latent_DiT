@@ -12,7 +12,6 @@ from datasets.img_latent_dataset import ImgLatentDataset
 from sklearn.metrics import silhouette_score, davies_bouldin_score, calinski_harabasz_score
 from scipy.spatial.distance import cdist
 
-
 # -----------------------------
 # 1. Latent 및 Label 수집
 # -----------------------------
@@ -95,7 +94,6 @@ def evaluate_gmm_performance(latents, labels, gmm_params, save_path):
         print(
             f"{r['Class']:<8} | {r['Silhouette']:>10.4f} | {r['DB_Index']:>10.4f} | {r['CH_Index']:>10.2f} | {r['Avg_Dist']:>10.4f}")
     print("=" * 65)
-
 
 # -----------------------------
 # 3. Main 실행부

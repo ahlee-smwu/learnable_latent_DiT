@@ -6,7 +6,59 @@ state-of-the-art FID 1.35 on ImageNet 256x256.
 
 by Maple (Jingfeng Yao) from HUST-VL
 """
+# # fix import
+# ============================================================
+# FIX: datasets name collision (HF datasets vs local datasets)
+# - CODE ONLY
+# - accelerate / DDP safe
+# ============================================================
 
+import sys
+import site
+import importlib.util
+from pathlib import Path
+
+# ------------------------------------------------------------
+# 1) huggingface datasets를 site-packages에서 "패키지 import"
+# ------------------------------------------------------------
+_site_packages = site.getsitepackages()
+_original_sys_path = sys.path.copy()
+
+# site-packages를 sys.path 최우선으로
+for sp in reversed(_site_packages):
+    if sp in sys.path:
+        sys.path.remove(sp)
+    sys.path.insert(0, sp)
+
+import datasets as hf_datasets  # ✅ 진짜 HF 패키지 import
+
+# sys.modules에 datasets 고정
+sys.modules["datasets"] = hf_datasets
+
+# sys.path 복구
+sys.path = _original_sys_path
+
+# ------------------------------------------------------------
+# 2) 로컬 ImgLatentDataset 직접 로드
+# ------------------------------------------------------------
+_local_ds_path = (
+    Path(__file__).resolve().parents[1]
+    / "datasets"
+    / "img_latent_dataset.py"
+)
+
+spec = importlib.util.spec_from_file_location(
+    "local_img_latent_dataset",
+    _local_ds_path
+)
+_local_ds = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(_local_ds)
+
+ImgLatentDataset = _local_ds.ImgLatentDataset
+
+# ============================================================
+# 이후부터는 일반 import
+# ============================================================
 import torch
 import torch.distributed as dist
 import torch.backends.cuda
@@ -28,13 +80,47 @@ from copy import deepcopy
 from collections import OrderedDict
 from PIL import Image
 from tqdm import tqdm
+import pickle
+
+import torch.nn.functional as F
 
 from diffusers.models import AutoencoderKL
+from accelerate import Accelerator
+
 from models.lightningdit import LightningDiT_models
 from transport import create_transport, Sampler
-from accelerate import Accelerator
-from datasets.img_latent_dataset import ImgLatentDataset
-import pickle
+
+
+# # for common import
+# import torch
+# import torch.distributed as dist
+# import torch.backends.cuda
+# import torch.backends.cudnn
+# from torch.nn.parallel import DistributedDataParallel as DDP
+# from torch.utils.data import DataLoader
+# from torch.utils.tensorboard import SummaryWriter
+#
+# import math
+# import yaml
+# import json
+# import numpy as np
+# import logging
+# import os
+# import argparse
+# from time import time
+# from glob import glob
+# from copy import deepcopy
+# from collections import OrderedDict
+# from PIL import Image
+# from tqdm import tqdm
+#
+# from diffusers.models import AutoencoderKL
+# from models.lightningdit import LightningDiT_models
+# from transport import create_transport, Sampler
+# from accelerate import Accelerator
+# from datasets.img_latent_dataset import ImgLatentDataset
+# import pickle
+# import torch.nn.functional as F
 
 def do_train(train_config, accelerator):
     """
@@ -189,17 +275,66 @@ def do_train(train_config, accelerator):
         train_steps = 0
     log_steps = 0
     running_loss = 0
+    running_mse = 0
+    running_cos = 0
+    running_ot = 0
+
     start_time = time()
     use_checkpoint = train_config['train']['use_checkpoint'] if 'use_checkpoint' in train_config['train'] else True
     if accelerator.is_main_process:
         logger.info(f"Using checkpointing: {use_checkpoint}")
 
     '''Clustering'''
-    cluster_path = train_config['kmeans']['load_dir']
-    with open(os.path.join(cluster_path, "kmeans_clusters.pkl"), "rb") as f:
-        ckpt = pickle.load(f)
-    centers = {cls: torch.from_numpy(mu).to(device=device, dtype=torch.float32) for cls, mu in ckpt["centers"].items()}
-    # ckpt["centers"]: dict: class → (K, D)
+    cluster_type = train_config['cluster_type']
+    if accelerator.process_index == 0:
+        if accelerator.is_main_process:
+            logger.info(f"Clustering: {cluster_type}")
+
+    if cluster_type == 'kmeans':
+        cluster_path = train_config['kmeans']['load_dir']
+        with open(os.path.join(cluster_path, "kmeans_clusters.pkl"), "rb") as f:
+            ckpt = pickle.load(f)
+        kmeans_centers = {cls: torch.from_numpy(mu).to(device=device, dtype=torch.float32) for cls, mu in ckpt["centers"].items()}
+        # ckpt["centers"]: dict: class → (K, D)
+        if accelerator.process_index == 0:
+            if accelerator.is_main_process:
+                logger.info(f"Cluster data from: {cluster_path}")
+
+    elif cluster_type == 'gmm':
+        cluster_path = train_config['gmm']['load_dir']
+        with open(os.path.join(cluster_path, "gmm_clusters.pkl"), "rb") as f:
+            ckpt = pickle.load(f)
+        # ---- Mean (μ): class -> (K, D)
+        gmm_means = {
+            cls: torch.from_numpy(mu).to(device=device, dtype=torch.float32)
+            for cls, mu in ckpt["means"].items()
+        }
+        # ---- Covariance (Σ)
+        # diag: (K, D)
+        # full: (K, D, D)
+        gmm_covs = {
+            cls: torch.from_numpy(cov).to(device=device, dtype=torch.float32)
+            for cls, cov in ckpt["covs"].items()
+        }
+        # ---- Mixture weight (π)
+        gmm_weights = {
+            cls: torch.from_numpy(w).to(device=device, dtype=torch.float32)
+            for cls, w in ckpt["weights"].items()
+        }
+        # ---- PCA components (class-wise)
+        gmm_pca = {
+            cls: {
+                "components": torch.from_numpy(pca_dict["components"])
+                .to(device=device, dtype=torch.float32),
+                "mean": torch.from_numpy(pca_dict["mean"])
+                .to(device=device, dtype=torch.float32),
+            }
+            for cls, pca_dict in ckpt["pca_components"].items()
+        }
+        gmm_labels = ckpt.get("labels", None)
+        gmm_use_weight = train_config['gmm']['use_weight']
+        if accelerator.is_main_process:
+            logger.info(f"Cluster data from: {cluster_path}")
 
     while True:
         pbar = tqdm(loader, desc=f"Epoch loop", dynamic_ncols=True)
@@ -214,42 +349,19 @@ def do_train(train_config, accelerator):
             model_kwargs = dict(y=y)
 
             # Cluster matching
-            cluster_means, cluster_ids = get_cluster_means(x, y, centers)
-            cluster_sigma = torch.ones_like(x)
-
-            # # Cluster matching
-            # B, C, H, W = x.shape
-            # latents_flat = x.view(B, -1)  # [B, D]
-            #
-            # cluster_means_list = []
-            # cluster_ids_list = torch.zeros(B, dtype=torch.long, device=device)
-            #
-            # # batch vectorized assignment
-            # for cls in centers.keys():
-            #     mask = (y == cls)
-            #     if mask.sum() == 0:
-            #         continue
-            #     cls_latents = latents_flat[mask]  # (B_cls, D)
-            #     cls_centers = centers[cls]  # (K, D)
-            #
-            #     # 거리 계산: (B_cls, K)
-            #     dists = ((cls_latents[:, None, :] - cls_centers[None, :, :]) ** 2).sum(dim=2)
-            #     k_idx = dists.argmin(dim=1)  # (B_cls,)
-            #
-            #     cluster_ids_list[mask] = k_idx
-            #
-            #     cluster_means_list.append(cls_centers[k_idx])  # list of (B_cls, D)
-            #
-            # # list → Tensor, 전체 batch 연결
-            # cluster_means = torch.zeros_like(latents_flat)
-            # start_idx = 0
-            # for cls in centers.keys():
-            #     mask = (y == cls)
-            #     num_samples = mask.sum().item()
-            #     if num_samples == 0:
-            #         continue
-            #     cluster_means[mask] = cluster_means_list[start_idx]
-            #     start_idx += 1
+            if cluster_type == 'kmeans':
+                cluster_means, cluster_ids = get_cluster_kmeans(x, y, kmeans_centers)
+                cluster_sigma = torch.ones_like(x)
+            elif cluster_type == 'gmm':
+                cluster_means, cluster_sigma, cluster_ids = get_cluster_gmm(x,y,
+                    gmm_means,
+                    gmm_covs,
+                    gmm_weights,
+                    use_weight=gmm_use_weight,
+                    stochastic=True
+                )
+                # cluster_sigma = torch.ones_like(x) # don't use gmm cov, use org I
+            cluster_sigma = cluster_sigma * 1.3 # x1.3 weighting
 
             # learned mu/sigma
             learned_mu = torch.randn_like(x)
@@ -258,11 +370,17 @@ def do_train(train_config, accelerator):
             # loss_dict = transport.training_losses(model, x, model_kwargs)
             loss_dict = transport.training_losses_learnable_eps2(model, x, model_kwargs, learned_mu=cluster_means, learned_sigma=cluster_sigma) # for learnable eps
 
+            # MSE Loss
+            mse_loss = loss_dict["loss"].mean()
+            loss = mse_loss
+            # Cosine Loss
             if 'cos_loss' in loss_dict:
-                mse_loss = loss_dict["loss"].mean()
-                loss = loss_dict["cos_loss"].mean() + mse_loss
-            else:
-                loss = loss_dict["loss"].mean()
+                loss = loss + loss_dict["cos_loss"].mean()
+            # OT Loss
+            if 'ot_loss' in loss_dict:
+                lambda_ot = 0.005  # 여기서 가중치 조절
+                loss = loss + (lambda_ot * loss_dict["ot_loss"].mean())
+
             opt.zero_grad()
             accelerator.backward(loss)
             if 'max_grad_norm' in train_config['optimizer']:
@@ -272,10 +390,13 @@ def do_train(train_config, accelerator):
             update_ema(ema, model.module)
 
             # Log loss values:
+            running_loss += loss.item()
+            running_mse += mse_loss.item()
             if 'cos_loss' in loss_dict:
-                running_loss += mse_loss.item()
-            else:
-                running_loss += loss.item()
+                running_cos += loss_dict["cos_loss"].mean().item()
+            if 'ot_loss' in loss_dict:
+                running_ot += loss_dict["ot_loss"].mean().item()
+
             log_steps += 1
             train_steps += 1
 
@@ -283,19 +404,42 @@ def do_train(train_config, accelerator):
                 pbar.set_postfix({"loss": f"{loss:.4f}"})
 
             if train_steps % train_config['train']['log_every'] == 0:
-                # Measure training speed:
                 torch.cuda.synchronize()
                 end_time = time()
                 steps_per_sec = log_steps / (end_time - start_time)
-                # Reduce loss history over all processes:
+
+                # 개별 로스들 텐서화 (all_reduce를 위함)
                 avg_loss = torch.tensor(running_loss / log_steps, device=device)
-                dist.all_reduce(avg_loss, op=dist.ReduceOp.SUM)
-                avg_loss = avg_loss.item() / dist.get_world_size()
+                avg_mse = torch.tensor(running_mse / log_steps, device=device)
+                avg_cos = torch.tensor(running_cos / log_steps, device=device)
+                avg_ot = torch.tensor(running_ot / log_steps, device=device)
+
+                # 모든 프로세스의 결과를 합산
+                for l_tensor in [avg_loss, avg_mse, avg_cos, avg_ot]:
+                    dist.all_reduce(l_tensor, op=dist.ReduceOp.SUM)
+
+                world_size = dist.get_world_size()
+                avg_loss = avg_loss.item() / world_size
+                avg_mse = avg_mse.item() / world_size
+                avg_cos = avg_cos.item() / world_size
+                avg_ot = avg_ot.item() / world_size
+
                 if accelerator.is_main_process:
-                    logger.info(f"(step={train_steps:07d}) Train Loss: {avg_loss:.4f}, Train Steps/Sec: {steps_per_sec:.2f}")
+                    # 1. Logger (터미널) 출력
+                    logger.info(
+                        f"(step={train_steps:07d}) Loss: {avg_loss:.4f} (MSE: {avg_mse:.4f}, Cos: {avg_cos:.4f}, OT: {avg_ot:.4f})")
+
+                    # 2. Tensorboard 기록 (기존 Loss/train 유지 + 개별 항목 추가)
                     writer.add_scalar('Loss/train', avg_loss, train_steps)
-                # Reset monitoring variables:
+                    writer.add_scalar('Loss/mse', avg_mse, train_steps)
+                    writer.add_scalar('Loss/cos', avg_cos, train_steps)
+                    writer.add_scalar('Loss/ot', avg_ot, train_steps)
+
+                # --- 변수 초기화 (중요) ---
                 running_loss = 0
+                running_mse = 0
+                running_cos = 0
+                running_ot = 0
                 log_steps = 0
                 start_time = time()
 
@@ -318,7 +462,11 @@ def do_train(train_config, accelerator):
                 if 'valid_path' in train_config['data']:
                     if accelerator.is_main_process:
                         logger.info(f"Start evaluating at step {train_steps}")
-                    val_loss = evaluate(model, valid_loader, device, transport, centers, (0.0, 1.0))
+                    if cluster_type == 'kmeans':
+                        val_loss = evaluate(model, valid_loader, device, transport, cluster_type="kmeans",kmeans_centers=kmeans_centers)
+                    elif cluster_type == 'gmm':
+                        val_loss = evaluate(model,valid_loader,device,transport,
+                            cluster_type="gmm",gmm_means=gmm_means,gmm_covs=gmm_covs,gmm_weights=gmm_weights,gmm_use_weight=gmm_use_weight,)
                     val_loss = torch.tensor(val_loss, device=device)
                     dist.all_reduce(val_loss, op=dist.ReduceOp.SUM)
                     val_loss = val_loss.item() / dist.get_world_size()
@@ -412,7 +560,7 @@ def create_logger(logging_dir):
         logger.addHandler(logging.NullHandler())
     return logger
 
-def get_cluster_means(x, y, centers):
+def get_cluster_kmeans(x, y, centers):
     """
     Compute cluster mean for each sample in the batch.
 
@@ -445,48 +593,149 @@ def get_cluster_means(x, y, centers):
     return cluster_means, cluster_ids
 
 @torch.no_grad()
-def evaluate(model, valid_loader, device, transport, centers, clip_range=(0.0, 1.0)):
+def get_cluster_gmm(
+        x, y, gmm_means, gmm_covs, gmm_weights, use_weight=True,
+        stochastic=True, eps=1e-8
+):
+    device = x.device
+
+    # Flatten
+    if x.dim() == 4:
+        B, C, H, W = x.shape
+        D = C * H * W  # 8192
+        x_flat = x.view(B, D)
+    else:
+        B, D = x.shape
+        x_flat = x
+
+    cluster_means_out = torch.empty_like(x_flat)
+    cluster_sigma_out = torch.empty_like(x_flat)
+    cluster_ids_out = torch.empty(B, dtype=torch.long, device=device)
+
+    for cls_tensor in torch.unique(y):
+        cls = int(cls_tensor.item())
+        idx = (y == cls)
+        if idx.sum() == 0: continue
+
+        x_cls = x_flat[idx]  # (B_cls, 8192)
+        B_cls = x_cls.shape[0]
+
+        means = gmm_means[cls].to(device)  # (50, 8192)
+        weights = gmm_weights[cls].to(device)  # (50,)
+        covs_pca = gmm_covs[cls].to(device)  # (50, 256)
+
+        K = means.shape[0]
+
+        # ✅ Mahalanobis 거리 계산 (차원 완벽 호환)
+        diff = x_cls[:, None, :] - means[None, :, :]  # (B_cls, K, 8192)
+        sq_diff = diff ** 2  # (B_cls, K, 8192)
+
+        # covs를 K로만 broadcasting
+        covs_scale = covs_pca.mean(dim=1) + eps  # (K,)
+        mahalanobis = sq_diff.sum(dim=2) / covs_scale[None, :]  # (B_cls, K,8192).sum -> (B_cls,K) / (K,) -> (B_cls,K)
+
+        # Log-determinant 근사 (단순화)
+        log_det = D * torch.log(covs_scale)  # (K,)
+
+        log_prob = -0.5 * (mahalanobis + log_det[None, :]) + torch.log(weights[None, :] + eps)
+
+        posterior = F.softmax(log_prob, dim=1)  # (B_cls, K)
+
+        if stochastic:
+            cluster_ids = torch.distributions.Categorical(posterior).sample()
+        else:
+            cluster_ids = posterior.argmax(dim=1)
+
+        # 선택된 클러스터 파라미터
+        sel_means = means[cluster_ids]  # (B_cls, 8192)
+        sel_covs = covs_scale[cluster_ids]  # (B_cls,)
+        sel_sigma = torch.sqrt(sel_covs[:, None]).expand_as(sel_means)  # (B_cls, 8192)
+
+        cluster_means_out[idx] = sel_means
+        cluster_sigma_out[idx] = sel_sigma
+        cluster_ids_out[idx] = cluster_ids
+
+    if x.dim() == 4:
+        cluster_means_out = cluster_means_out.view(B, C, H, W)
+        cluster_sigma_out = cluster_sigma_out.view(B, C, H, W)
+
+    return cluster_means_out, cluster_sigma_out, cluster_ids_out
+
+@torch.no_grad()
+def evaluate(
+    model,
+    valid_loader,
+    device,
+    transport,
+    cluster_type,
+    kmeans_centers=None,
+    gmm_means=None,
+    gmm_covs=None,
+    gmm_weights=None,
+    gmm_use_weight=True,
+    clip_range=(0.0, 1.0),
+):
     """
     Evaluate model on the validation dataset using cluster-based learnable epsilon loss.
-
-    Args:
-        model: PyTorch model to evaluate.
-        valid_loader: DataLoader for validation dataset.
-        device: Device to run evaluation on.
-        transport: Transport module providing loss functions.
-        centers: dict of class_id -> (K, D) cluster centers, tensor on device
-        clip_range: optional tuple (min, max) to clip outputs (not used currently)
-
-    Returns:
-        avg_loss: Average validation loss (torch.Tensor on device)
     """
     model.eval()
     running_loss = 0.0
     num_batches = 0
 
-    disable_tqdm = not (dist.is_available() and dist.is_initialized() and dist.get_rank() == 0)
-    for x, y in tqdm(valid_loader, desc="Validation", leave=False, dynamic_ncols=True, disable=disable_tqdm):
+    disable_tqdm = not (
+        dist.is_available() and dist.is_initialized() and dist.get_rank() == 0
+    )
+
+    for x, y in tqdm(
+        valid_loader,
+        desc="Validation",
+        leave=False,
+        dynamic_ncols=True,
+        disable=disable_tqdm,
+    ):
         x = x.to(device)
         y = y.to(device)
         model_kwargs = dict(y=y)
 
-        # Compute cluster means
-        cluster_means, cluster_ids = get_cluster_means(x, y, centers)
-        cluster_sigma = torch.ones_like(x)
+        # -------------------------
+        # Cluster matching
+        # -------------------------
+        if cluster_type == "kmeans":
+            cluster_means, cluster_ids = get_cluster_kmeans(
+                x, y, kmeans_centers
+            )
+            cluster_sigma = torch.ones_like(x)
 
+        elif cluster_type == "gmm":
+            cluster_means, cluster_sigma, cluster_ids = get_cluster_gmm(
+                x,
+                y,
+                gmm_means,
+                gmm_covs,
+                gmm_weights,
+                use_weight=gmm_use_weight,
+                stochastic=False
+            )
+        else:
+            raise ValueError(f"Unknown cluster_type: {cluster_type}")
+
+        # -------------------------
         # Compute loss
+        # -------------------------
         loss_dict = transport.training_losses_learnable_eps2(
-            model, x, model_kwargs, learned_mu=cluster_means, learned_sigma=cluster_sigma
+            model,
+            x,
+            model_kwargs,
+            learned_mu=cluster_means,
+            learned_sigma=cluster_sigma,
         )
 
-        # combine losses
-        if 'cos_loss' in loss_dict:
-            mse_loss = loss_dict["loss"].mean()
-            loss = loss_dict["cos_loss"].mean() + mse_loss
+        if "cos_loss" in loss_dict:
+            loss = loss_dict["loss"].mean() + loss_dict["cos_loss"].mean()
         else:
             loss = loss_dict["loss"].mean()
 
-        running_loss += loss
+        running_loss += loss.detach()
         num_batches += 1
 
     avg_loss = running_loss / num_batches

@@ -299,11 +299,11 @@ class Transport:
         t_view = t.view(-1, *([1] * (len(x1.shape) - 1)))
 
         # learned_weight 계산
-        # t <= 0.8: 0.5에서 0으로 선형 감소
-        # t > 0.8: 0
+        # t <= 0.6: 0.5에서 0으로 선형 감소
+        # t > 0.6: 0
         learned_weight = th.where(
-            t_view <= 0.8,
-            0.5 * (1 - t_view / 0.8),
+            t_view <= 0.6,
+            0.5 * (1 - t_view / 0.6),
             th.zeros_like(t_view)
         )
 
@@ -463,6 +463,25 @@ class Transport:
             terms['loss'] = mean_flat(((model_output - ut) ** 2))
             if self.use_cosine_loss:
                 terms['cos_loss'] = mean_flat(1 - th.nn.functional.cosine_similarity(model_output, ut, dim=1))
+            # -------------------------------------------------------------------
+            # (C) Optimal Transport Loss 추가 부분
+            # -------------------------------------------------------------------
+            x1_pred = x0 - model_output
+            y = model_kwargs.get('y', None)
+
+            if y is not None:
+                ot_loss_val = th.tensor(0.0, device=x1.device)
+                unique_y = y.unique()
+                count = 0
+                for label in unique_y:
+                    mask = (y == label)
+                    if mask.sum() > 1:
+                        pred_dist = x1_pred[mask].view(mask.sum(), -1)
+                        real_dist = x1[mask].view(mask.sum(), -1)
+                        ot_loss_val += self.sinkhorn_loss(pred_dist, real_dist.detach())
+                        count += 1
+                # print(f"DEBUG: count={count}, ot_sum={ot_loss_val.item()}")
+                terms['ot_loss'] = ot_loss_val / count if count > 0 else th.tensor(0.0, device=x1.device)
         else:
             _, drift_var = self.path_sampler.compute_drift(xt, t)
             sigma_t, _ = self.path_sampler.compute_sigma_t(path.expand_t_like_x(t, xt))
@@ -482,6 +501,38 @@ class Transport:
 
         return terms
 
+    def sinkhorn_loss(self, x, y, epsilon=1.0, niter=10):
+        """
+        수치적 안정성을 위해 Log-sum-exp를 사용하는 Sinkhorn 알고리즘
+        epsilon: 거리 값의 스케일에 따라 조정 (0.1 ~ 10.0)
+        """
+        B = x.shape[0]
+        # 1. Cost Matrix: (B, B)
+        C = th.cdist(x, y, p=2) ** 2
+        C = C / x.shape[-1]  # [수정] 벡터 차원 수(예: 8192)로 나누기
+
+        # 2. 가중치 초기화 (Uniform)
+        # log(1/B)
+        log_B = -th.log(th.tensor(B, device=x.device, dtype=x.dtype))
+
+        # u, v는 듀얼 변수 (Dual variables)
+        u = th.zeros(B, device=x.device, dtype=x.dtype)
+        v = th.zeros(B, device=x.device, dtype=x.dtype)
+
+        for _ in range(niter):
+            # u = epsilon * [log(1/B) - logsumexp((v - C) / epsilon)]
+            u = epsilon * (log_B - th.logsumexp((v.unsqueeze(0) - C) / epsilon, dim=1))
+            # v = epsilon * [log(1/B) - logsumexp((u - C) / epsilon)]
+            v = epsilon * (log_B - th.logsumexp((u.unsqueeze(1) - C) / epsilon, dim=0))
+
+        # 3. Transport Plan 계산 (pi = exp((u + v - C) / epsilon))
+        # 직접 pi를 구하지 않고 log_pi를 구해 계산 효율성 증대
+        log_pi = (u.unsqueeze(1) + v.unsqueeze(0) - C) / epsilon
+
+        # 최종 Loss: sum(pi * C)
+        loss = th.sum(th.exp(log_pi) * C)
+
+        return loss
 
     def get_drift(
         self
