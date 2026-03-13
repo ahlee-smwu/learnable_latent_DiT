@@ -296,6 +296,107 @@ def tsne_real_gmm_generated(
 
     print(f"✅ Saved t-SNE: {save_path}")
 
+# center score
+def analyze_center_proximity(real_latents, gen_latents, flat_means, save_path):
+    """
+    flat_means : (Nm, D) — GMM centers (real 기준)
+    각 real/gen point → 가장 가까운 center까지의 L2 거리를 비교
+    """
+    from scipy.stats import ks_2samp, mannwhitneyu, wasserstein_distance
+    import matplotlib.gridspec as gridspec
+
+    # 각 point → nearest center 거리
+    real_dists = ((real_latents[:, None, :] - flat_means[None]) ** 2).sum(-1)  # (Nr, Nm)
+    gen_dists  = ((gen_latents[:, None, :]  - flat_means[None]) ** 2).sum(-1)  # (Ng, Nm)
+
+    real_dist = np.sqrt(real_dists.min(axis=1))  # (Nr,)
+    gen_dist  = np.sqrt(gen_dists.min(axis=1))   # (Ng,)
+
+    # 통계 검정
+    ks_stat, ks_p = ks_2samp(real_dist, gen_dist)
+    _, mw_p       = mannwhitneyu(real_dist, gen_dist, alternative='greater')
+    wass          = wasserstein_distance(real_dist, gen_dist)
+    median_ratio  = np.median(gen_dist) / (np.median(real_dist) + 1e-12)
+    std_ratio     = gen_dist.std()      / (real_dist.std()      + 1e-12)
+
+    # 수치 출력
+    print("\n" + "=" * 60)
+    print("  Center-Proximity Analysis")
+    print("  GMM center ↔ Real pts  vs  GMM center ↔ Gen pts")
+    print("=" * 60)
+    for name, d in [("Real → nearest center", real_dist),
+                    ("Gen  → nearest center", gen_dist)]:
+        p = np.percentile(d, [10, 25, 50, 75, 90])
+        print(f"\n  [{name}]")
+        print(f"    n          = {len(d)}")
+        print(f"    mean ± std = {d.mean():.4f} ± {d.std():.4f}")
+        print(f"    P10/25/50/75/90 = {p[0]:.3f}/{p[1]:.3f}/{p[2]:.3f}/{p[3]:.3f}/{p[4]:.3f}")
+
+    print(f"\n  Median ratio  (Gen/Real) = {median_ratio:.4f}  {'⚠️  center 편향' if median_ratio < 0.8 else '✅'}")
+    print(f"  Std ratio     (Gen/Real) = {std_ratio:.4f}  {'⚠️  다양성 부족' if std_ratio < 0.6 else '✅'}")
+    print(f"  KS  stat / p            = {ks_stat:.4f} / {ks_p:.2e}  {'⚠️' if ks_p < 0.05 else '✅'}")
+    print(f"  Mann-Whitney p          = {mw_p:.2e}  {'⚠️  gen이 center에 더 가까움' if mw_p < 0.05 else '✅'}")
+    print(f"  Wasserstein             = {wass:.4f}")
+
+    # 시각화
+    C_REAL, C_GEN = '#4fc3f7', '#ef5350'
+    fig = plt.figure(figsize=(18, 5), facecolor='#0f0f1a')
+    fig.suptitle("GMM Center ↔ Real  vs  GMM Center ↔ Gen",
+                 color='white', fontsize=13, fontweight='bold')
+    gs = gridspec.GridSpec(1, 3, figure=fig, wspace=0.33)
+
+    def style(ax, title):
+        ax.set_facecolor('#1a1a2e')
+        ax.tick_params(colors='#aaa', labelsize=9)
+        ax.set_title(title, color='white', fontsize=10.5, pad=6)
+        for sp in ax.spines.values():
+            sp.set_edgecolor('#333')
+
+    # 히스토그램
+    ax = fig.add_subplot(gs[0])
+    bins = np.linspace(0, max(real_dist.max(), gen_dist.max()) * 1.02, 60)
+    ax.hist(real_dist, bins=bins, density=True, alpha=0.55, color=C_REAL,
+            label=f'Real  med={np.median(real_dist):.3f}')
+    ax.hist(gen_dist,  bins=bins, density=True, alpha=0.55, color=C_GEN,
+            label=f'Gen   med={np.median(gen_dist):.3f}')
+    ax.axvline(np.median(real_dist), color=C_REAL, lw=2, ls='--')
+    ax.axvline(np.median(gen_dist),  color=C_GEN,  lw=2, ls='--')
+    ax.set_xlabel('Distance to nearest center', color='#aaa')
+    ax.set_ylabel('Density', color='#aaa')
+    ax.legend(fontsize=9)
+    style(ax, 'Distribution')
+
+    # CDF
+    ax = fig.add_subplot(gs[1])
+    for dist, label, color in [(real_dist, 'Real', C_REAL), (gen_dist, 'Gen', C_GEN)]:
+        sd = np.sort(dist)
+        ax.plot(sd, np.arange(1, len(sd)+1) / len(sd), color=color, lw=2, label=label)
+    ax.axhline(0.5, color='#aaa', lw=1, ls=':', alpha=0.6)
+    ax.axvline(np.median(real_dist), color=C_REAL, lw=1.2, ls='--', alpha=0.7)
+    ax.axvline(np.median(gen_dist),  color=C_GEN,  lw=1.2, ls='--', alpha=0.7)
+    ax.set_xlabel('Distance to nearest center', color='#aaa')
+    ax.set_ylabel('CDF', color='#aaa')
+    ax.legend(fontsize=9); ax.grid(alpha=0.12)
+    style(ax, 'CDF  (gen이 왼쪽 → center 편향)')
+
+    # Violin
+    ax = fig.add_subplot(gs[2])
+    vp = ax.violinplot([real_dist, gen_dist], positions=[1, 2],
+                       showmedians=True, showextrema=True)
+    for body, c in zip(vp['bodies'], [C_REAL, C_GEN]):
+        body.set_facecolor(c); body.set_alpha(0.65)
+    vp['cmedians'].set_color('white'); vp['cmedians'].set_linewidth(2)
+    for key in ['cmins', 'cmaxes', 'cbars']:
+        vp[key].set_color('#aaa')
+    ax.set_xticks([1, 2])
+    ax.set_xticklabels(['Real', 'Gen'], color='white', fontsize=11)
+    ax.set_ylabel('Distance to nearest center', color='#aaa')
+    style(ax, 'Violin')
+
+    fig.savefig(save_path, dpi=200, bbox_inches='tight', facecolor='#0f0f1a')
+    plt.close(fig)
+    print(f"✅ Saved: {save_path}")
+
 # -------------------------------------------------
 # Main
 # -------------------------------------------------
@@ -346,21 +447,30 @@ def main(args):
     )
 
     # -------- t-SNE --------
-    tsne_real_gmm_generated(
-        real_latents,
-        real_labels,
-        gmm_means,
-        gen_latents,
-        save_path=os.path.join(gmm_dir, "tsne_real_val.png")
-    )
+    # tsne_real_gmm_generated(
+    #     real_latents,
+    #     real_labels,
+    #     gmm_means,
+    #     gen_latents,
+    #     save_path=os.path.join(gmm_dir, "tsne_real_val.png")
+    # )
 
+    # center score
+    flat_means = np.vstack([means for means in gmm_means.values()])
+
+    analyze_center_proximity(
+        real_latents=real_latents,
+        gen_latents=gen_latents,
+        flat_means=flat_means,
+        save_path=os.path.join(gmm_dir, "proximity_analysis.png")
+    )
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--config_path", type=str, default="model1_f16d32.yaml")
     parser.add_argument("--ds_config_path", type=str, default="model2_xl_vavae_f16d32.yaml")
-    parser.add_argument("--generated_dir", type=str, default='/mnt/SSD_raid1/lsun/church_outdoor_val')
-    # parser.add_argument("--generated_dir", type=str, default='output/1st_lightningdit_xl_vavae_f16d32_gmm30/lightningdit-xl-1-ckpt-0159000-euler-20')
+    # parser.add_argument("--generated_dir", type=str, default='/mnt/SSD_raid1/lsun/church_outdoor_val')
+    parser.add_argument("--generated_dir", type=str, default='output/5th_lightningdit_xl_vavae_f16d32_gmm30_use_weight/lightningdit-xl-1-ckpt-0063000-euler-20')
     parser.add_argument("--model_type", type=str, default="vavae")
     args = parser.parse_args()
 

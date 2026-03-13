@@ -299,7 +299,7 @@ class Transport:
         t_view = t.view(-1, *([1] * (len(x1.shape) - 1)))
 
         # learned_weight 계산
-        # t <= 0.6: 0.5에서 0으로 선형 감소
+        # t <= 0.6: 0.6에서 0으로 선형 감소
         # t > 0.6: 0
         learned_weight = th.where(
             t_view <= 0.6,

@@ -1,5 +1,6 @@
 import os
 import shutil
+import argparse
 import torch
 import numpy as np
 from cleanfid import fid, features
@@ -11,40 +12,9 @@ from prdc import compute_prdc
 # os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# Path to real images
-# real_dir = "/mnt/SSD_raid1/lsun/church_outdoor_train/church" # navi
-real_dir = "/mnt/HDD_raid1/lsun/church_outdoor_train/church" # a6000
-real_cluster_base_dir = "/mnt/HDD_raid1/lsun/church_outdoor_train_gmm/30_diag/class_0"
-
-# Path to generated images (base directory)
-gen_base_dir = 'output/2nd_lightningdit_xl_vavae_f16d32_gmm30_use_weight/lightningdit-xl-1-ckpt-0078000-euler-20/class_0/'
-# selected_clusters = [1, 3, 15, 20, 27, 6, 19, 25, 7, 11, 18, 9, 26, 0, 10, 24, 16] # for selected cluster
-selected_clusters = list(range(30)) # for all cluster
-selected_dir = os.path.join(gen_base_dir, "selected_clusters_tmp")
-gen_cluster_base_dir = gen_base_dir
-
 # ---------------------------------------------------------
 # 2. Helper functions
 # ---------------------------------------------------------
-def prepare_gen_data():
-    """Collect generated images for selected clusters into a temporary folder."""
-    if os.path.exists(selected_dir):
-        shutil.rmtree(selected_dir)
-    os.makedirs(selected_dir, exist_ok=True)
-
-    print(f"[INFO] Preparing generated images in {selected_dir}...")
-    count = 0
-    for i in selected_clusters:
-        cluster_path = os.path.join(gen_base_dir, f"cluster_{i}")
-        if not os.path.exists(cluster_path):
-            continue
-        for fname in os.listdir(cluster_path):
-            if fname.lower().endswith(('.png', '.jpg', '.jpeg')):
-                shutil.copy(os.path.join(cluster_path, fname), os.path.join(selected_dir, f"c{i}_{fname}"))
-                count += 1
-    print(f"[INFO] Prepared {count} generated images.")
-    return count
-
 def extract_features_from_dir(img_dir, feat_model, device, max_samples=50000):
     files = []
     for root, _, fs in os.walk(img_dir):
@@ -67,7 +37,38 @@ def extract_features_from_dir(img_dir, feat_model, device, max_samples=50000):
 
     return feats.astype(np.float16)
 
-def main():
+def main(args):
+    # Path to real images
+    # real_dir = "/mnt/SSD_raid1/lsun/church_outdoor_train/church" # navi
+    real_dir = args.real_dir
+    real_cluster_base_dir = args.real_cluster_base_dir
+
+    # Path to generated images (base directory)
+    gen_base_dir = args.gen_base_dir
+    # selected_clusters = [1, 3, 15, 20, 27, 6, 19, 25, 7, 11, 18, 9, 26, 0, 10, 24, 16] # for selected cluster
+    selected_clusters = list(range(30))  # for all cluster
+    selected_dir = os.path.join(gen_base_dir, "selected_clusters_tmp")
+    gen_cluster_base_dir = gen_base_dir
+
+    def prepare_gen_data():
+        """Collect generated images for selected clusters into a temporary folder."""
+        if os.path.exists(selected_dir):
+            shutil.rmtree(selected_dir)
+        os.makedirs(selected_dir, exist_ok=True)
+
+        print(f"[INFO] Preparing generated images in {selected_dir}...")
+        count = 0
+        for i in selected_clusters:
+            cluster_path = os.path.join(gen_base_dir, f"cluster_{i}")
+            if not os.path.exists(cluster_path):
+                continue
+            for fname in os.listdir(cluster_path):
+                if fname.lower().endswith(('.png', '.jpg', '.jpeg')):
+                    shutil.copy(os.path.join(cluster_path, fname), os.path.join(selected_dir, f"c{i}_{fname}"))
+                    count += 1
+        print(f"[INFO] Prepared {count} generated images.")
+        return count
+
     try:
         # [Step 1] Load images
         # 1) for cluster model
@@ -96,6 +97,7 @@ def main():
 
         # [Step 2] Limit number of samples (50,000)
         max_samples = 50000
+        max_samples_cluster = 90112
 
         if len(real_files) > max_samples:
             print(f"[INFO] Sampling Real images to {max_samples}...")
@@ -155,7 +157,7 @@ def main():
                 real_cluster_dir, feat_model, device
             )
             feat_gen_c = extract_features_from_dir(
-                gen_cluster_dir, feat_model, device
+                gen_cluster_dir, feat_model, device, max_samples_cluster
             )
 
             if feat_real_c is None or feat_gen_c is None:
@@ -192,4 +194,11 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--real_dir", type=str, default='/mnt/HDD_raid1/lsun/church_outdoor_train/church')
+    parser.add_argument("--real_cluster_base_dir", type=str, default="/mnt/HDD_raid1/lsun/church_outdoor_train_gmm/30_diag/class_0/")
+    # parser.add_argument("--gen_base_dir", type=str, default="output/5th_lightningdit_xl_vavae_f16d32_gmm30_use_weight/lightningdit-xl-1-ckpt-0063000-euler-20/class_0/")
+    parser.add_argument("--gen_base_dir", type=str, default="output/org_lightningdit_xl_vavae_f16d32_lsun/lightningdit-xl-1-ckpt-0033000-66ep-euler-250/class_0/")
+    args = parser.parse_args()
+
+    main(args)

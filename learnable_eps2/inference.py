@@ -22,6 +22,7 @@ from tokenizer.vavae import VA_VAE
 from models.lightningdit import LightningDiT_models
 from transport import create_transport, Sampler
 from datasets.img_latent_dataset import ImgLatentDataset
+from train import norm_cluster_sigma
 
 def sample_random_clusters_kmeans(
     centers: dict,
@@ -54,8 +55,11 @@ def sample_random_clusters_gmm(
         batch_size: int,
         latent_shape: tuple,
         device=None,
+        eps=1e-8,
+        var_floor=0.0,
 ):
     C, H, W = latent_shape
+    D = C * H * W
     # D = 8192, PCA_dim = 256 가정
 
     # 1. 데이터 통합
@@ -77,25 +81,36 @@ def sample_random_clusters_gmm(
         probs = all_weights / all_weights.sum()
         idx = torch.multinomial(probs, batch_size, replacement=True)
     # 2) 랜덤 샘플링
-    else:
+    elif use_weight == 'rand':
         total_clusters = len(all_means)
         idx = torch.randint(0, total_clusters, (batch_size,), device=device)
+    # 3) 특정 cluster select 샘플링
+    elif use_weight == 'select':
+        selected_clusters = torch.tensor(
+            [14, 24, 19, 27, 25, 4, 15, 2], device=device)
+        rand_idx = torch.randint(0, len(selected_clusters), (batch_size,), device=device)
+        idx = selected_clusters[rand_idx]
 
-    # 3. 선택된 클러스터 파라미터
-    m_orig = all_means[idx]  # (batch_size, 8192)
-    v_pca = all_covs[idx]  # (batch_size, 256)
-    V = all_pca_comps[idx]  # (batch_size, 256, 8192)
+    # 3. 선택된 클러스터 파라미터 추출
+    sel_means = all_means[idx]  # (batch_size, 8192)
+    sel_v = all_covs[idx]  # (batch_size, 256)
+    U = all_pca_comps[idx]  # (batch_size, 256, 8192)
 
-    # 4. 결과 도출
-    # Mean: 학습 코드에서 이미 inverse_transform 되었으므로 그대로 사용
-    cluster_means = m_orig.view(batch_size, C, H, W)
+    # 4. 결과 도출 (get_cluster_gmm의 수치 연산 방식 적용)
+    # Mean 처리
+    cluster_means = sel_means.view(batch_size, C, H, W)
 
-    # Sigma: PCA 공간의 분산을 원본 공간으로 투영 (v_pca @ V^2)
-    # v_pca.unsqueeze(1) shape: (B, 1, 256)
-    # V**2 shape: (B, 256, 8192)
-    # Result: (B, 1, 8192)
-    v_orig = torch.bmm(v_pca.unsqueeze(1), V ** 2).squeeze(1)
-    cluster_sigma = torch.sqrt(v_orig + 1e-6).view(batch_size, C, H, W)
+    # Sigma 처리: v_safe 및 U^2 연산 일치화
+    v_safe = torch.clamp(sel_v, min=eps)
+    U2 = U * U  # (B, 256, 8192)
+
+    # diag_var 계산 (B, 1, 256) @ (B, 256, 8192) -> (B, 8192)
+    diag_var = torch.bmm(v_safe.unsqueeze(1), U2).squeeze(1)
+
+    if var_floor > 0.0:
+        diag_var = torch.clamp(diag_var, min=var_floor)
+
+    cluster_sigma = torch.sqrt(diag_var + eps).view(batch_size, C, H, W)
 
     return cluster_means, cluster_sigma, idx
 
@@ -130,7 +145,7 @@ def do_sample(train_config, accelerator, ckpt_path=None, cfg_scale=None, model=N
 
     if not os.path.exists(sample_folder_dir):
         if accelerator.process_index == 0:
-            os.makedirs(sample_folder_dir, exist_ok=True) 
+            os.makedirs(sample_folder_dir, exist_ok=True)
     else:
         png_files = [f for f in os.listdir(sample_folder_dir) if f.endswith('.png')]
         png_count = len(png_files)
@@ -190,7 +205,7 @@ def do_sample(train_config, accelerator, ckpt_path=None, cfg_scale=None, model=N
         )
     else:
         raise NotImplementedError(f"Sampling mode {mode} is not supported.")
-    
+
     if vae is None:
         vae = VA_VAE(
             f'model1_f16d32.yaml',
@@ -227,7 +242,7 @@ def do_sample(train_config, accelerator, ckpt_path=None, cfg_scale=None, model=N
     if not demo_sample_mode:
         pbar = tqdm(pbar) if rank == 0 else pbar
     total = 0
-    
+
     if accelerator.process_index == 0:
         print_with_prefix("Using latent normalization")
     dataset = ImgLatentDataset(
@@ -308,14 +323,14 @@ def do_sample(train_config, accelerator, ckpt_path=None, cfg_scale=None, model=N
             # Combine 8 images into a 2x4 grid
             os.makedirs('demo_images', exist_ok=True)
             # Stack all images into a large numpy array
-            all_images = np.stack([img[0] for img in images])  # Take first image from each batch            
+            all_images = np.stack([img[0] for img in images])  # Take first image from each batch
             # Rearrange into 2x4 grid
             h, w = all_images.shape[1:3]
             grid = np.zeros((2 * h, 4 * w, 3), dtype=np.uint8)
             for idx, image in enumerate(all_images):
                 i, j = divmod(idx, 4)  # Calculate position in 2x4 grid
                 grid[i*h:(i+1)*h, j*w:(j+1)*w] = image
-                
+
             # Save the combined image
             Image.fromarray(grid).save('demo_images/demo_samples_org.png')
 
@@ -338,12 +353,15 @@ def do_sample(train_config, accelerator, ckpt_path=None, cfg_scale=None, model=N
                     device=device
                 )
                 # cluster_sigma = torch.ones_like(cluster_means)
-                # cluster_sigma = cluster_sigma * 1.3  # x1.3 weighting
+                # cluster_sigma = cluster_sigma * 1.5  # x1.3 weighting
+            cluster_sigma = norm_cluster_sigma(cluster_sigma)
 
             eps = torch.randn_like(cluster_means)
             cluster = cluster_means + (eps * cluster_sigma)
             z = (0.5 * cluster) + (0.5 * eps)
-            
+            ''' # for org '''
+            # z = torch.randn(n, model.in_channels, latent_size, latent_size, device=device)
+
             # Setup classifier-free guidance:
             if using_cfg:
                 z = torch.cat([z, z], 0)
