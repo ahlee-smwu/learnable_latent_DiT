@@ -333,6 +333,8 @@ def do_train(train_config, accelerator):
         }
         gmm_labels = ckpt.get("labels", None)
         gmm_use_weight = train_config['gmm']['use_weight']
+        gmm_shell = torch.load(os.path.join(cluster_path, 'cluster_shell.pt'))
+        reweight_lambda = train_config['gmm']['reweight_lambda']
         if accelerator.is_main_process:
             logger.info(f"Cluster data from: {cluster_path}")
 
@@ -348,7 +350,7 @@ def do_train(train_config, accelerator):
                 y = y.to(device)
             model_kwargs = dict(y=y)
 
-            # Cluster matching
+            '''Cluster matching'''
             if cluster_type == 'kmeans':
                 cluster_means, cluster_ids = get_cluster_kmeans(x, y, kmeans_centers)
                 cluster_sigma = torch.ones_like(x)
@@ -357,10 +359,11 @@ def do_train(train_config, accelerator):
                     x,y,
                     gmm_means, gmm_covs, gmm_weights, gmm_pca,
                     use_weight=gmm_use_weight,
-                    stochastic=True
+                    stochastic=False #True
                 )
                 # cluster_sigma = torch.ones_like(x) # don't use gmm cov, use org I
                 # cluster_sigma = cluster_sigma * 1.3 # x1.3 weighting
+            ## normalize sigma
             cluster_sigma = norm_cluster_sigma(cluster_sigma)
 
             # learned mu/sigma
@@ -373,16 +376,20 @@ def do_train(train_config, accelerator):
             # loss_dict = transport.training_losses(model, x, model_kwargs)
             loss_dict = transport.training_losses_learnable_eps2(model, x, model_kwargs, learned_mu=cluster_means, learned_sigma=cluster_sigma) # for learnable eps
 
+            '''reweighting fo data points by cluster shell'''
+            distance = torch.norm(x.view(x.shape[0], -1) - cluster_means.view(x.shape[0], -1), dim=1)  # (B,)
+            reweight = compute_reweight(distance, cluster_ids, gmm_shell, lambda_=reweight_lambda)
+
             # MSE Loss
-            mse_loss = loss_dict["loss"].mean()
+            mse_loss = (loss_dict["loss"] * reweight).mean()
             loss = mse_loss
             # Cosine Loss
             if 'cos_loss' in loss_dict:
-                loss = loss + loss_dict["cos_loss"].mean()
+                loss = loss + (loss_dict["cos_loss"] * reweight).mean()
             # OT Loss
             if 'ot_loss' in loss_dict:
-                lambda_ot = 0.005  # 여기서 가중치 조절
-                #loss = loss + (lambda_ot * loss_dict["ot_loss"].mean())
+                lambda_ot = 0.005
+                # loss = loss + (lambda_ot * loss_dict["ot_loss"].mean())
 
             opt.zero_grad()
             accelerator.backward(loss)
@@ -408,7 +415,7 @@ def do_train(train_config, accelerator):
             if accelerator.is_main_process:
                 pbar.set_postfix({"loss": f"{loss:.4f}"})
 
-            if (train_steps-1500) % train_config['train']['log_every'] == 0:
+            if (train_steps) % train_config['train']['log_every'] == 0:
                 torch.cuda.synchronize()
                 end_time = time()
                 steps_per_sec = log_steps / (end_time - start_time)
@@ -472,8 +479,8 @@ def do_train(train_config, accelerator):
                     if cluster_type == 'kmeans':
                         val_loss = evaluate(model, valid_loader, device, transport, cluster_type="kmeans",kmeans_centers=kmeans_centers)
                     elif cluster_type == 'gmm':
-                        val_loss = evaluate(model,valid_loader,device,transport,
-                            cluster_type="gmm",gmm_means=gmm_means,gmm_covs=gmm_covs,gmm_weights=gmm_weights,gmm_pca=gmm_pca,gmm_use_weight=gmm_use_weight,)
+                        val_loss = evaluate_eps(model,valid_loader,device,transport, cluster_type="gmm",gmm_means=gmm_means,gmm_covs=gmm_covs,gmm_weights=gmm_weights,gmm_pca=gmm_pca,gmm_use_weight=gmm_use_weight,)
+                        # val_loss = evaluate(model,valid_loader,device,transport)
                     val_loss = torch.tensor(val_loss, device=device)
                     dist.all_reduce(val_loss, op=dist.ReduceOp.SUM)
                     val_loss = val_loss.item() / dist.get_world_size()
@@ -818,8 +825,25 @@ def norm_cluster_sigma(  #TO-DO # 배치단위에서만 정규화됨,,, 의도�
 
     return norm_cluster_sigma
 
+def compute_reweight(dist, cluster_ids, gmm_shell, lambda_=0.6):
+    # dist:        (B,)  float tensor
+    # cluster_ids: (B,)  long tensor
+    # gmm_shell:   dict {int: {'mean': float, 'std': float}}
+
+    mu_d = torch.tensor(
+        [gmm_shell[int(cid)]['mean'] for cid in cluster_ids],
+        dtype=dist.dtype, device=dist.device
+    )  # (B,)
+    sig_d = torch.tensor(
+        [gmm_shell[int(cid)]['std'] for cid in cluster_ids],
+        dtype=dist.dtype, device=dist.device
+    )  # (B,)
+    z = (dist - mu_d) / (sig_d + 1e-6)  # (B,)
+    w = 1.0 + lambda_ * z ** 2          # (B,)
+    return w                             # (B,)
+
 @torch.no_grad()
-def evaluate(
+def evaluate_eps(
     model,
     valid_loader,
     device,
@@ -884,6 +908,53 @@ def evaluate(
             learned_mu=cluster_means,
             learned_sigma=cluster_sigma,
         )
+
+        if "cos_loss" in loss_dict:
+            loss = loss_dict["loss"].mean() + loss_dict["cos_loss"].mean()
+        else:
+            loss = loss_dict["loss"].mean()
+
+        running_loss += loss.detach()
+        num_batches += 1
+
+    avg_loss = running_loss / num_batches
+    return avg_loss
+    
+@torch.no_grad()
+def evaluate(
+    model,
+    valid_loader,
+    device,
+    transport,
+    clip_range=(0.0, 1.0),
+):
+    """
+    Evaluate model on the validation dataset using cluster-based learnable epsilon loss.
+    """
+    model.eval()
+    running_loss = 0.0
+    num_batches = 0
+
+    disable_tqdm = not (
+        dist.is_available() and dist.is_initialized() and dist.get_rank() == 0
+    )
+
+    for x, y in tqdm(
+        valid_loader,
+        desc="Validation",
+        leave=False,
+        dynamic_ncols=True,
+        disable=disable_tqdm,
+    ):
+        x = x.to(device)
+        y = y.to(device)
+        model_kwargs = dict(y=y)
+
+        # -------------------------
+        # Compute loss
+        # -------------------------
+        loss_dict = transport.training_losses(model, x, model_kwargs)
+
 
         if "cos_loss" in loss_dict:
             loss = loss_dict["loss"].mean() + loss_dict["cos_loss"].mean()

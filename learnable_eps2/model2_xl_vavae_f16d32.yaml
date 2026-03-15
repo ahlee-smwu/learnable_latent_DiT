@@ -1,8 +1,8 @@
 # we recommend to read config_details.yaml first.
 
 # for inference
-#ckpt_path: 'output/5th_lightningdit_xl_vavae_f16d32_gmm30_use_weight/checkpoints/0003000.pt' # <---- download our pre-trained lightningdit or your own checkpoint
-ckpt_path: 'output/org_lightningdit_xl_vavae_f16d32_lsun/checkpoints/0033000-66ep.pt' # <---- download our pre-trained lightningdit or your own checkpoint
+ckpt_path: 'output/6th_lightningdit_xl_vavae_f16d32_gmm30_deterministic/checkpoints/0007380.pt' # <---- download our pre-trained lightningdit or your own checkpoint
+#ckpt_path: 'output/org_lightningdit_xl_vavae_f16d32_lsun/checkpoints/0014760.pt' # <---- download our pre-trained lightningdit or your own checkpoint
 
 data:
   data_path: "feature_output/model1_f16d32/lsun_train_256"
@@ -42,15 +42,15 @@ model:
 
 # recommend to use default settings
 train:
-  max_steps: 160000 #80000
-  global_batch_size: 128 #64 per 1 a6000
+  max_steps: 16000 #80000
+  global_batch_size: 512 #128 #64 per 1 a6000
   global_seed: 0
   output_dir: 'output'
-  exp_name: '5th_lightningdit_xl_vavae_f16d32_gmm30_use_weight_test' # <---- experiment name, set as you like
+  exp_name: '6th_lightningdit_xl_vavae_f16d32_gmm30_deterministic' # <---- experiment name, set as you like
 #  exp_name: 'org_lightningdit_xl_vavae_f16d32_lsun' # <---- experiment name, set as you like
   ckpt: null
-  log_every: 100 #100
-  ckpt_every: 3000 #6000 #3000
+  log_every: 200 #100 #100
+  ckpt_every: 2460 #6000 #3000
 #  weight_init: '../pretrained_weight/lightningdit-xl-imagenet256-64ep.pt'
 #  resume: true
 optimizer:
@@ -75,7 +75,7 @@ sample:
   rtol: 0.001
   reverse: false
   likelihood: false
-  num_sampling_steps: 250 #20 #250
+  num_sampling_steps: 20 #250
   cfg_scale: 0 #10.0 # <---- cfg scale, for 800 epoch performance with FID=1.35 cfg_scale=6.7
                   #       for 64 epoch performance with FID=2.11 cfg_scale=10.0
                   #       you may find we use a large cfg_scale, this is because of 2 reasons:
@@ -83,7 +83,7 @@ sample:
                   #       we enable cfg interval, which reduces the negative effects of large cfg on high-noise parts. This means larger cfg can be utilized
   
   # recommend to use default settings
-  per_proc_batch_size: 128 #256
+  per_proc_batch_size: 256
   fid_num: 90000 #50000
   cfg_interval_start: 0.11
   timestep_shift: 0.3
@@ -101,12 +101,13 @@ kmeans:
     load_dir: 'MGD3_kmeans/result_gmm/30' # for usage
 
 gmm:
-    num_clusters: 30 # 10,20,50
-    use_pca: true
-    pca_dim: 256
-    cov_type: diag # diag, full
-    init_dir: 'MGD3_kmeans/result' # kmeans로 초기화함
-    output_dir: 'GMM/result_proba_lsun' # for fit
-#    exp_name: 'kmeans' # 안 쓰는 듯?
-    load_dir: 'GMM/result_proba_lsun/30_diag' # for usage
-    use_weight: rand #true # gmm weight for sampling cluster idx
+  num_clusters: 30 # 10,20,50
+  use_pca: true
+  pca_dim: 256
+  cov_type: diag # diag, full
+  init_dir: 'MGD3_kmeans/result' # kmeans로 초기화함
+  output_dir: 'GMM/result_proba_lsun' # for fit
+#  exp_name: 'kmeans' # 안 쓰는 듯?
+  load_dir: 'GMM/result_proba_lsun/30_diag' # for usage
+  use_weight: rand #false #rand #true # gmm weight for training&sampling cluster idx
+  reweight_lambda: 0.6 # reweighting parameter

@@ -26,6 +26,8 @@ from datetime import datetime
 from datasets.img_latent_dataset import ImgLatentDataset
 from tokenizer.vavae import VA_VAE
 from safetensors import safe_open
+from scipy.stats import ks_2samp, mannwhitneyu, wasserstein_distance
+import matplotlib.gridspec as gridspec
 
 # -------------------------------------------------
 # Utils
@@ -97,7 +99,7 @@ def collect_generated_latents(
         ),
         ImageFolder(
             args.generated_dir,
-            transform=vae_wrapper.img_transform(p_hflip=0.0) #1.0
+            transform=vae_wrapper.img_transform(p_hflip=1.0) #1.0
         )
     ]
 
@@ -302,8 +304,6 @@ def analyze_center_proximity(real_latents, gen_latents, flat_means, save_path):
     flat_means : (Nm, D) — GMM centers (real 기준)
     각 real/gen point → 가장 가까운 center까지의 L2 거리를 비교
     """
-    from scipy.stats import ks_2samp, mannwhitneyu, wasserstein_distance
-    import matplotlib.gridspec as gridspec
 
     # 각 point → nearest center 거리
     real_dists = ((real_latents[:, None, :] - flat_means[None]) ** 2).sum(-1)  # (Nr, Nm)
@@ -339,18 +339,19 @@ def analyze_center_proximity(real_latents, gen_latents, flat_means, save_path):
     print(f"  Wasserstein             = {wass:.4f}")
 
     # 시각화
-    C_REAL, C_GEN = '#4fc3f7', '#ef5350'
-    fig = plt.figure(figsize=(18, 5), facecolor='#0f0f1a')
+    C_REAL, C_GEN = '#1a6fa8', '#c0392b'  # 흰 배경용: 채도 낮춘 파랑/빨강
+
+    fig = plt.figure(figsize=(18, 5), facecolor='white')
     fig.suptitle("GMM Center ↔ Real  vs  GMM Center ↔ Gen",
-                 color='white', fontsize=13, fontweight='bold')
+                 color='black', fontsize=13, fontweight='bold')
     gs = gridspec.GridSpec(1, 3, figure=fig, wspace=0.33)
 
     def style(ax, title):
-        ax.set_facecolor('#1a1a2e')
-        ax.tick_params(colors='#aaa', labelsize=9)
-        ax.set_title(title, color='white', fontsize=10.5, pad=6)
+        ax.set_facecolor('white')
+        ax.tick_params(colors='#333', labelsize=9)
+        ax.set_title(title, color='black', fontsize=10.5, pad=6)
         for sp in ax.spines.values():
-            sp.set_edgecolor('#333')
+            sp.set_edgecolor('#cccccc')
 
     # 히스토그램
     ax = fig.add_subplot(gs[0])
@@ -361,9 +362,9 @@ def analyze_center_proximity(real_latents, gen_latents, flat_means, save_path):
             label=f'Gen   med={np.median(gen_dist):.3f}')
     ax.axvline(np.median(real_dist), color=C_REAL, lw=2, ls='--')
     ax.axvline(np.median(gen_dist),  color=C_GEN,  lw=2, ls='--')
-    ax.set_xlabel('Distance to nearest center', color='#aaa')
-    ax.set_ylabel('Density', color='#aaa')
-    ax.legend(fontsize=9)
+    ax.set_xlabel('Distance to nearest center', color='#444')
+    ax.set_ylabel('Density', color='#444')
+    ax.legend(fontsize=9, framealpha=0.5, edgecolor='#ccc')
     style(ax, 'Distribution')
 
     # CDF
@@ -371,12 +372,13 @@ def analyze_center_proximity(real_latents, gen_latents, flat_means, save_path):
     for dist, label, color in [(real_dist, 'Real', C_REAL), (gen_dist, 'Gen', C_GEN)]:
         sd = np.sort(dist)
         ax.plot(sd, np.arange(1, len(sd)+1) / len(sd), color=color, lw=2, label=label)
-    ax.axhline(0.5, color='#aaa', lw=1, ls=':', alpha=0.6)
+    ax.axhline(0.5, color='#888', lw=1, ls=':', alpha=0.6)
     ax.axvline(np.median(real_dist), color=C_REAL, lw=1.2, ls='--', alpha=0.7)
     ax.axvline(np.median(gen_dist),  color=C_GEN,  lw=1.2, ls='--', alpha=0.7)
-    ax.set_xlabel('Distance to nearest center', color='#aaa')
-    ax.set_ylabel('CDF', color='#aaa')
-    ax.legend(fontsize=9); ax.grid(alpha=0.12)
+    ax.set_xlabel('Distance to nearest center', color='#444')
+    ax.set_ylabel('CDF', color='#444')
+    ax.legend(fontsize=9, framealpha=0.5, edgecolor='#ccc')
+    ax.grid(alpha=0.25, color='#cccccc')
     style(ax, 'CDF  (gen이 왼쪽 → center 편향)')
 
     # Violin
@@ -384,18 +386,245 @@ def analyze_center_proximity(real_latents, gen_latents, flat_means, save_path):
     vp = ax.violinplot([real_dist, gen_dist], positions=[1, 2],
                        showmedians=True, showextrema=True)
     for body, c in zip(vp['bodies'], [C_REAL, C_GEN]):
-        body.set_facecolor(c); body.set_alpha(0.65)
-    vp['cmedians'].set_color('white'); vp['cmedians'].set_linewidth(2)
+        body.set_facecolor(c); body.set_alpha(0.55)
+    vp['cmedians'].set_color('black'); vp['cmedians'].set_linewidth(2)
     for key in ['cmins', 'cmaxes', 'cbars']:
-        vp[key].set_color('#aaa')
+        vp[key].set_color('#555')
     ax.set_xticks([1, 2])
-    ax.set_xticklabels(['Real', 'Gen'], color='white', fontsize=11)
-    ax.set_ylabel('Distance to nearest center', color='#aaa')
+    ax.set_xticklabels(['Real', 'Gen'], color='black', fontsize=11)
+    ax.set_ylabel('Distance to nearest center', color='#444')
     style(ax, 'Violin')
 
-    fig.savefig(save_path, dpi=200, bbox_inches='tight', facecolor='#0f0f1a')
+    fig.savefig(os.path.join(save_path, 'center_analysis.svg'),
+                format='svg', bbox_inches='tight', facecolor='white')
     plt.close(fig)
     print(f"✅ Saved: {save_path}")
+
+def analyze_center_proximity_per_cluster(
+    real_latents, gen_latents,
+    flat_means,
+    save_path,
+    ncols=6,
+):
+    import os
+    import numpy as np
+    import matplotlib.pyplot as plt
+    from scipy.stats import ks_2samp, mannwhitneyu, wasserstein_distance
+
+    os.makedirs(save_path, exist_ok=True)
+
+    C_REAL, C_GEN = '#1a6fa8', '#c0392b'  # 흰 배경용: 채도 낮춘 파랑/빨강
+
+    # ════════════════════════════════════════════════════════════════════
+    # STEP 1. 클러스터 라벨 할당 — 각 포인트의 nearest center index
+    # ════════════════════════════════════════════════════════════════════
+    real_labels = np.argmin(
+        ((real_latents[:, None, :] - flat_means[None]) ** 2).sum(-1), axis=1
+    )
+    gen_labels = np.argmin(
+        ((gen_latents[:, None, :] - flat_means[None]) ** 2).sum(-1), axis=1
+    )
+
+    n_clusters = flat_means.shape[0]
+    nrows = int(np.ceil(n_clusters / ncols))
+
+    # ════════════════════════════════════════════════════════════════════
+    # STEP 2. 모든 클러스터 통계 검정
+    # ════════════════════════════════════════════════════════════════════
+    print("\n" + "=" * 70)
+    print("  Center-Proximity Analysis — Per Cluster Statistical Tests")
+    print("=" * 70)
+
+    cluster_data = {}
+    for k in range(n_clusters):
+        r_pts = real_latents[real_labels == k]
+        g_pts = gen_latents[gen_labels == k]
+
+        if len(r_pts) == 0 or len(g_pts) == 0:
+            cluster_data[k] = None
+            print(f"\n  [Cluster {k:02d}]  ⚠️  데이터 없음 (nr={len(r_pts)}, ng={len(g_pts)})")
+            continue
+
+        r_dists = np.sqrt(((r_pts[:, None, :] - flat_means[None]) ** 2).sum(-1).min(axis=1))
+        g_dists = np.sqrt(((g_pts[:, None, :] - flat_means[None]) ** 2).sum(-1).min(axis=1))
+
+        ks_stat, ks_p = ks_2samp(r_dists, g_dists)
+        _, mw_p       = mannwhitneyu(r_dists, g_dists, alternative='greater')
+        wass          = wasserstein_distance(r_dists, g_dists)
+        med_ratio     = np.median(g_dists) / (np.median(r_dists) + 1e-12)
+        std_ratio     = g_dists.std()      / (r_dists.std()      + 1e-12)
+
+        cluster_data[k] = dict(
+            r=r_dists, g=g_dists,
+            ks_stat=ks_stat, ks_p=ks_p,
+            mw_p=mw_p, wass=wass,
+            med_ratio=med_ratio, std_ratio=std_ratio,
+        )
+
+        print(f"\n  [Cluster {k:02d}]  nr={len(r_pts)}  ng={len(g_pts)}")
+        for name, d in [("Real → nearest center", r_dists),
+                        ("Gen  → nearest center", g_dists)]:
+            p = np.percentile(d, [10, 25, 50, 75, 90])
+            print(f"    [{name}]  mean±std={d.mean():.4f}±{d.std():.4f}  "
+                  f"P10/50/90={p[0]:.3f}/{p[2]:.3f}/{p[4]:.3f}")
+        print(f"    Median ratio  (Gen/Real) = {med_ratio:.4f}  "
+              f"{'⚠️  center 편향' if med_ratio < 0.8 else '✅'}")
+        print(f"    Std ratio     (Gen/Real) = {std_ratio:.4f}  "
+              f"{'⚠️  다양성 부족' if std_ratio < 0.6 else '✅'}")
+        print(f"    KS  stat/p  = {ks_stat:.4f}/{ks_p:.2e}  "
+              f"{'⚠️' if ks_p < 0.05 else '✅'}  "
+              f"Mann-Whitney p = {mw_p:.2e}  "
+              f"{'⚠️  gen이 center에 더 가까움' if mw_p < 0.05 else '✅'}  "
+              f"Wasserstein = {wass:.4f}")
+
+    print("\n" + "=" * 70)
+    print("  통계 검정 완료. 이미지 저장 시작...")
+    print("=" * 70)
+
+    # ── 공통 axes 스타일 ──────────────────────────────────────────────────
+    def _style(ax, title, subtitle=''):
+        ax.set_facecolor('white')
+        ax.tick_params(colors='#333', labelsize=6)
+        for sp in ax.spines.values():
+            sp.set_edgecolor('#cccccc')
+        full_title = f'{title}\n{subtitle}' if subtitle else title
+        ax.set_title(full_title, color='black', fontsize=7, pad=3, linespacing=1.3)
+
+    def _empty(ax, k):
+        ax.set_facecolor('white')
+        ax.text(0.5, 0.5, f'Cluster {k}\n(no data)',
+                ha='center', va='center', color='#aaa', fontsize=7,
+                transform=ax.transAxes)
+        ax.set_xticks([]); ax.set_yticks([])
+        for sp in ax.spines.values(): sp.set_edgecolor('#cccccc')
+
+    # ════════════════════════════════════════════════════════════════════
+    # STEP 3. 히스토그램 그리드
+    # ════════════════════════════════════════════════════════════════════
+    fig_h, axes_h = plt.subplots(
+        nrows, ncols, figsize=(ncols * 2.8, nrows * 2.4),
+        facecolor='white',
+    )
+    fig_h.suptitle('Center-Proximity — Histogram  (Real vs Gen, per cluster)',
+                   color='black', fontsize=13, fontweight='bold', y=1.01)
+    axes_h = axes_h.flatten()
+
+    for k in range(n_clusters):
+        ax = axes_h[k]
+        d  = cluster_data[k]
+        if d is None:
+            _empty(ax, k); continue
+
+        r, g = d['r'], d['g']
+        bins = np.linspace(0, max(r.max(), g.max()) * 1.02, 40)
+        ax.hist(r, bins=bins, density=True, alpha=0.55, color=C_REAL,
+                label=f'R {np.median(r):.2f}')
+        ax.hist(g, bins=bins, density=True, alpha=0.55, color=C_GEN,
+                label=f'G {np.median(g):.2f}')
+        ax.axvline(np.median(r), color=C_REAL, lw=1.2, ls='--')
+        ax.axvline(np.median(g), color=C_GEN,  lw=1.2, ls='--')
+        ax.legend(fontsize=6, loc='upper right', framealpha=0.5, edgecolor='#ccc')
+        ax.set_xlabel('Dist to nearest center', color='#444', fontsize=6)
+
+        warn = '⚠' if d['med_ratio'] < 0.8 or d['ks_p'] < 0.05 else '✓'
+        _style(ax, f'Cluster {k:02d}  {warn}',
+               f'med_r={d["med_ratio"]:.2f} ks_p={d["ks_p"]:.1e}')
+
+    for ax in axes_h[n_clusters:]:
+        ax.set_visible(False)
+
+    fig_h.tight_layout()
+    path_h = os.path.join(save_path, 'proximity_histogram_grid.svg')
+    fig_h.savefig(path_h, format='svg', bbox_inches='tight', facecolor='white')
+    plt.close(fig_h)
+    print(f'\n✅ [1/3] Saved histogram grid → {path_h}')
+
+    # ════════════════════════════════════════════════════════════════════
+    # STEP 4. CDF 그리드
+    # ════════════════════════════════════════════════════════════════════
+    fig_c, axes_c = plt.subplots(
+        nrows, ncols, figsize=(ncols * 2.8, nrows * 2.4),
+        facecolor='white',
+    )
+    fig_c.suptitle('Center-Proximity — CDF  (Real vs Gen, per cluster)',
+                   color='black', fontsize=13, fontweight='bold', y=1.01)
+    axes_c = axes_c.flatten()
+
+    for k in range(n_clusters):
+        ax = axes_c[k]
+        d  = cluster_data[k]
+        if d is None:
+            _empty(ax, k); continue
+
+        for dist, label, color in [(d['r'], 'Real', C_REAL), (d['g'], 'Gen', C_GEN)]:
+            sd = np.sort(dist)
+            ax.plot(sd, np.arange(1, len(sd) + 1) / len(sd),
+                    color=color, lw=1.3, label=label)
+        ax.axhline(0.5, color='#888', lw=0.8, ls=':', alpha=0.6)
+        ax.axvline(np.median(d['r']), color=C_REAL, lw=1.0, ls='--', alpha=0.6)
+        ax.axvline(np.median(d['g']), color=C_GEN,  lw=1.0, ls='--', alpha=0.6)
+        ax.legend(fontsize=6, loc='lower right', framealpha=0.5, edgecolor='#ccc')
+        ax.set_xlabel('Dist to nearest center', color='#444', fontsize=6)
+        ax.set_ylabel('CDF', color='#444', fontsize=6)
+        ax.grid(alpha=0.20, color='#cccccc')
+
+        warn = '⚠' if d['mw_p'] < 0.05 else '✓'
+        _style(ax, f'Cluster {k:02d}  {warn}',
+               f'mw_p={d["mw_p"]:.1e} W={d["wass"]:.3f}')
+
+    for ax in axes_c[n_clusters:]:
+        ax.set_visible(False)
+
+    fig_c.tight_layout()
+    path_c = os.path.join(save_path, 'proximity_cdf_grid.svg')
+    fig_c.savefig(path_c, format='svg', bbox_inches='tight', facecolor='white')
+    plt.close(fig_c)
+    print(f'✅ [2/3] Saved CDF grid       → {path_c}')
+
+    # ════════════════════════════════════════════════════════════════════
+    # STEP 5. 바이올린 그리드
+    # ════════════════════════════════════════════════════════════════════
+    fig_v, axes_v = plt.subplots(
+        nrows, ncols, figsize=(ncols * 2.8, nrows * 2.4),
+        facecolor='white',
+    )
+    fig_v.suptitle('Center-Proximity — Violin  (Real vs Gen, per cluster)',
+                   color='black', fontsize=13, fontweight='bold', y=1.01)
+    axes_v = axes_v.flatten()
+
+    for k in range(n_clusters):
+        ax = axes_v[k]
+        d  = cluster_data[k]
+        if d is None:
+            _empty(ax, k); continue
+
+        vp = ax.violinplot(
+            [d['r'], d['g']], positions=[1, 2],
+            showmedians=True, showextrema=True,
+        )
+        for body, c in zip(vp['bodies'], [C_REAL, C_GEN]):
+            body.set_facecolor(c); body.set_alpha(0.55)
+        vp['cmedians'].set_color('black'); vp['cmedians'].set_linewidth(1.5)
+        for key in ['cmins', 'cmaxes', 'cbars']:
+            vp[key].set_color('#555'); vp[key].set_linewidth(0.8)
+        ax.set_xticks([1, 2])
+        ax.set_xticklabels(['Real', 'Gen'], color='black', fontsize=7)
+        ax.set_ylabel('Dist to nearest center', color='#444', fontsize=6)
+
+        warn = '⚠' if d['std_ratio'] < 0.6 else '✓'
+        _style(ax, f'Cluster {k:02d}  {warn}',
+               f'std_r={d["std_ratio"]:.2f} med_r={d["med_ratio"]:.2f}')
+
+    for ax in axes_v[n_clusters:]:
+        ax.set_visible(False)
+
+    fig_v.tight_layout()
+    path_v = os.path.join(save_path, 'proximity_violin_grid.svg')
+    fig_v.savefig(path_v, format='svg', bbox_inches='tight', facecolor='white')
+    plt.close(fig_v)
+    print(f'✅ [3/3] Saved violin grid    → {path_v}')
+
+    return cluster_data
 
 # -------------------------------------------------
 # Main
@@ -416,7 +645,7 @@ def main(args):
     #
     # vae.eval()
 
-    # -------- real dataset --------
+    # -------- real latent --------
     dataset = ImgLatentDataset(
         data_dir=ds_config["data"]["data_path"],
         latent_norm=ds_config["data"].get("latent_norm", False),
@@ -438,7 +667,7 @@ def main(args):
 
     gmm_means = gmm_ckpt["means"]
 
-    # -------- generated --------
+    # -------- generated latent --------
     gen_latents = collect_generated_latents(
         args=args,
         ds_config=ds_config,
@@ -462,8 +691,15 @@ def main(args):
         real_latents=real_latents,
         gen_latents=gen_latents,
         flat_means=flat_means,
-        save_path=os.path.join(gmm_dir, "proximity_analysis.png")
-    )
+        save_path=os.path.join(gmm_dir, "center_analysis")
+    ) # 전체 데이터셋 분석
+
+    analyze_center_proximity_per_cluster(
+        real_latents=real_latents,
+        gen_latents=gen_latents,
+        flat_means=flat_means,
+        save_path=os.path.join(gmm_dir, "center_analysis")
+    ) # per cluster 분석
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
