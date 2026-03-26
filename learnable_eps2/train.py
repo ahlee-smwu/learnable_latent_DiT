@@ -377,15 +377,15 @@ def do_train(train_config, accelerator):
             loss_dict = transport.training_losses_learnable_eps2(model, x, model_kwargs, learned_mu=cluster_means, learned_sigma=cluster_sigma) # for learnable eps
 
             '''reweighting fo data points by cluster shell'''
-            distance = torch.norm(x.view(x.shape[0], -1) - cluster_means.view(x.shape[0], -1), dim=1)  # (B,)
-            reweight = compute_reweight(distance, cluster_ids, gmm_shell, lambda_=reweight_lambda)
+            # distance = torch.norm(x.view(x.shape[0], -1) - cluster_means.view(x.shape[0], -1), dim=1)  # (B,)
+            # reweight = compute_reweight(distance, cluster_ids, gmm_shell, lambda_=reweight_lambda)
 
             # MSE Loss
-            mse_loss = (loss_dict["loss"] * reweight).mean()
+            mse_loss = (loss_dict["loss"]).mean()
             loss = mse_loss
             # Cosine Loss
             if 'cos_loss' in loss_dict:
-                loss = loss + (loss_dict["cos_loss"] * reweight).mean()
+                loss = loss + (loss_dict["cos_loss"]).mean()
             # OT Loss
             if 'ot_loss' in loss_dict:
                 lambda_ot = 0.005
@@ -432,7 +432,7 @@ def do_train(train_config, accelerator):
                     l_tensor = accelerator.reduce(l_tensor, reduction="sum")
                     l_tensor.copy_(l_tensor)
 
-                world_size = dist.get_world_size()
+                world_size = accelerator.num_processes
                 avg_loss = avg_loss.item() / world_size
                 avg_mse = avg_mse.item() / world_size
                 avg_cos = avg_cos.item() / world_size
@@ -460,8 +460,9 @@ def do_train(train_config, accelerator):
             # Save checkpoint:
             if train_steps % train_config['train']['ckpt_every'] == 0 and train_steps > 0:
                 if accelerator.is_main_process:
+                    unwrapped_model = accelerator.unwrap_model(model)
                     checkpoint = {
-                        "model": model.module.state_dict(),
+                        "model": unwrapped_model.state_dict(),
                         "ema": ema.state_dict(),
                         "opt": opt.state_dict(),
                         "config": train_config,
@@ -470,7 +471,7 @@ def do_train(train_config, accelerator):
                     torch.save(checkpoint, checkpoint_path)
                     if accelerator.is_main_process:
                         logger.info(f"Saved checkpoint to {checkpoint_path}")
-                dist.barrier()
+                accelerator.wait_for_everyone()
 
                 # Evaluate on validation set
                 if 'valid_path' in train_config['data']:
@@ -482,8 +483,8 @@ def do_train(train_config, accelerator):
                         val_loss = evaluate_eps(model,valid_loader,device,transport, cluster_type="gmm",gmm_means=gmm_means,gmm_covs=gmm_covs,gmm_weights=gmm_weights,gmm_pca=gmm_pca,gmm_use_weight=gmm_use_weight,)
                         # val_loss = evaluate(model,valid_loader,device,transport)
                     val_loss = torch.tensor(val_loss, device=device)
-                    dist.all_reduce(val_loss, op=dist.ReduceOp.SUM)
-                    val_loss = val_loss.item() / dist.get_world_size()
+                    val_loss = accelerator.reduce(val_loss, reduction="mean")
+                    val_loss = val_loss.item()
                     if accelerator.is_main_process:
                         logger.info(f"Validation Loss: {val_loss:.4f}")
                         writer.add_scalar('Loss/validation', val_loss, train_steps)
@@ -573,6 +574,27 @@ def create_logger(logging_dir):
         logger = logging.getLogger(__name__)
         logger.addHandler(logging.NullHandler())
     return logger
+
+def is_dist_ready():
+    return dist.is_available() and dist.is_initialized()
+
+def get_dist_info(accelerator):
+    # 싱글/멀티 모두 안전
+    world_size = accelerator.num_processes
+    rank = accelerator.process_index
+    local_rank = accelerator.local_process_index
+    is_main = accelerator.is_main_process
+    device = accelerator.device
+    return world_size, rank, local_rank, is_main, device
+
+def safe_barrier():
+    if is_dist_ready():
+        dist.barrier()
+
+def safe_all_reduce(tensor, op=dist.ReduceOp.SUM):
+    if is_dist_ready():
+        dist.all_reduce(tensor, op=op)
+    return tensor
 
 def get_cluster_kmeans(x, y, centers):
     """

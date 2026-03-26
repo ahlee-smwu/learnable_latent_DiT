@@ -74,12 +74,19 @@ def main(args):
             shutil.copy(src, dst)
 
     # 전체 FID 계산
+    # fid_all = fid.compute_fid(
+    #     fdir1=gen_base_dir,
+    #     dataset_name="lsun_church",
+    #     dataset_res=256,
+    #     mode="clean",
+    #     dataset_split="train",
+    #     num_workers=8,
+    #     batch_size=32
+    # )
     fid_all = fid.compute_fid(
-        fdir1=all_cluster_dir,
-        dataset_name="lsun_church",
-        dataset_res=256,
+        fdir1=gen_base_dir,
+        fdir2=real_base_dir,
         mode="clean",
-        dataset_split="train",
         num_workers=8,
         batch_size=32
     )
@@ -175,8 +182,9 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--gen_base_dir", type=str, default='output/org_lightningdit_xl_vavae_f16d32_lsun/lightningdit-xl-1-ckpt-0033000-66ep-euler-250/class_0')
-    parser.add_argument("--real_base_dir", type=str, default="/mnt/HDD_raid1/lsun/church_outdoor_train_gmm/30_diag/class_0/")
+    # parser.add_argument("--gen_base_dir", type=str, default='output/org_lightningdit_xl_vavae_f16d32_lsun/lightningdit-xl-1-ckpt-0033000-66ep-euler-250/class_0')
+    parser.add_argument("--gen_base_dir", type=str, default='/mnt/HDD2/dataset/lsun/church_outdoor_val/church') # a6000
+    parser.add_argument("--real_base_dir", type=str, default="/mnt/HDD2/dataset/lsun/church_outdoor_train/church")
     args = parser.parse_args()
 
     main(args)
