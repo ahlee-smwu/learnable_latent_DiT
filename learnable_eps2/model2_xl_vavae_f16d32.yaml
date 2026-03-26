@@ -50,11 +50,12 @@ train:
 #  exp_name: 'org_lightningdit_xl_vavae_f16d32_lsun' # <---- experiment name, set as you like
   ckpt: null
   log_every: 200 #100 #100
-  ckpt_every: 2460 #6000 #3000
+  ckpt_every: 20000 #6000 #3000
 #  weight_init: '../pretrained_weight/lightningdit-xl-imagenet256-64ep.pt'
+#  weight_init: 'output/5th_lightningdit_xl_vavae_f16d32_gmm30_use_weight/checkpoints/0033000.pt'
 #  resume: true
-optimizer:
-  lr: 0.0002
+optimizer: # AdamW
+  lr: 0.0002 # 5th_finetune # 0.0002(~7th) # #org: 256batch, 0.0001
   beta2: 0.95
   
 # recommend to use default settings
