@@ -1,7 +1,7 @@
 # we recommend to read config_details.yaml first.
 
 # for inference
-ckpt_path: 'output/6th_lightningdit_xl_vavae_f16d32_gmm30_deterministic/checkpoints/0007380.pt' # <---- download our pre-trained lightningdit or your own checkpoint
+ckpt_path: 'output/10th_lightningdit_xl_vavae_f16d32_gmm30_deterministic/checkpoints/0049300.pt' # <---- download our pre-trained lightningdit or your own checkpoint
 #ckpt_path: 'output/org_lightningdit_xl_vavae_f16d32_lsun/checkpoints/0014760.pt' # <---- download our pre-trained lightningdit or your own checkpoint
 
 data:
@@ -20,7 +20,7 @@ data:
 
   # recommend to use default settings
   image_size: 256
-  num_classes: 1 # 1000
+  num_classes: 30 # 1000 #애초에 라벨이 31이 아니라 30인데 이걸 왜 31로 쳐넣었지
   num_workers: 8
   latent_norm: true # to normalize, channel-wise
   latent_multiplier: 1.0
@@ -42,20 +42,19 @@ model:
 
 # recommend to use default settings
 train:
-  max_steps: 16000 #80000
-  global_batch_size: 512 #128 #64 per 1 a6000
+  max_steps: 80000
+  global_batch_size: 256 #128 #64 per 1 a6000
   global_seed: 0
   output_dir: 'output'
-  exp_name: '6th_lightningdit_xl_vavae_f16d32_gmm30_deterministic' # <---- experiment name, set as you like
+  exp_name: '10th_lightningdit_xl_vavae_f16d32_gmm30_deterministic' # <---- experiment name, set as you like
 #  exp_name: 'org_lightningdit_xl_vavae_f16d32_lsun' # <---- experiment name, set as you like
   ckpt: null
   log_every: 200 #100 #100
-  ckpt_every: 20000 #6000 #3000
-#  weight_init: '../pretrained_weight/lightningdit-xl-imagenet256-64ep.pt'
-#  weight_init: 'output/5th_lightningdit_xl_vavae_f16d32_gmm30_use_weight/checkpoints/0033000.pt'
+  ckpt_every: 4930 #6000 #3000
+#  weight_init: 'output/8th_lightningdit_xl_vavae_f16d32_gmm30_deterministic/checkpoints_a6000/0100000-50ep.pt'
 #  resume: true
 optimizer: # AdamW
-  lr: 0.0002 # 5th_finetune # 0.0002(~7th) # #org: 256batch, 0.0001
+  lr: 0.0004 #0.0002 # 5th_finetune # 0.0002(~7th) # #org: 256batch, 0.0001
   beta2: 0.95
   
 # recommend to use default settings
@@ -76,15 +75,15 @@ sample:
   rtol: 0.001
   reverse: false
   likelihood: false
-  num_sampling_steps: 20 #250
-  cfg_scale: 0 #10.0 # <---- cfg scale, for 800 epoch performance with FID=1.35 cfg_scale=6.7
+  num_sampling_steps: 40 #250
+  cfg_scale: 7.0 #7.0 #10.0 # <---- cfg scale, for 800 epoch performance with FID=1.35 cfg_scale=6.7
                   #       for 64 epoch performance with FID=2.11 cfg_scale=10.0
                   #       you may find we use a large cfg_scale, this is because of 2 reasons:
                   #       we find a high-dimensional latent space requires a large cfg_scale to get good performance than f8d4 SD-VAE
                   #       we enable cfg interval, which reduces the negative effects of large cfg on high-noise parts. This means larger cfg can be utilized
   
   # recommend to use default settings
-  per_proc_batch_size: 256
+  per_proc_batch_size: 512 #256
   fid_num: 90000 #50000
   cfg_interval_start: 0.11
   timestep_shift: 0.3
@@ -110,5 +109,5 @@ gmm:
   output_dir: 'GMM/result_proba_lsun' # for fit
 #  exp_name: 'kmeans' # 안 쓰는 듯?
   load_dir: 'GMM/result_proba_lsun/30_diag' # for usage
-  use_weight: rand #false #rand #true # gmm weight for training&sampling cluster idx
-  reweight_lambda: 0.6 # reweighting parameter
+  use_weight: 'rand' #rand #false #rand #true # gmm weight for training&sampling cluster idx
+  reweight_lambda: 0.0 #0.6 # reweighting parameter

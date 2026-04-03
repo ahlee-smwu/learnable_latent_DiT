@@ -22,7 +22,7 @@ from tokenizer.vavae import VA_VAE
 from models.lightningdit import LightningDiT_models
 from transport import create_transport, Sampler
 from datasets.img_latent_dataset import ImgLatentDataset
-from train import norm_cluster_sigma
+from train import norm_cluster_sigma, precompute_sigma_scale
 
 def sample_random_clusters_kmeans(
     centers: dict,
@@ -302,7 +302,14 @@ def do_sample(train_config, accelerator, ckpt_path=None, cfg_scale=None, model=N
             for cls, pca_dict in ckpt["pca_components"].items()
         }
         gmm_labels = ckpt.get("labels", None)
+        gmm_cid = {      ##TO-DO, gmm.pkl에서 저장하게 하자
+            0: np.array([0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28]),
+        }
         gmm_use_weight = train_config['gmm']['use_weight']
+        global_sigma_scale = precompute_sigma_scale(gmm_covs, gmm_weights, gmm_pca, D=8192)
+        if accelerator.is_main_process:
+            print_with_prefix(f"[GMM] global_sigma_scale = {global_sigma_scale.item():.4f}  "
+                        f"(global_mean_var = {(1.0 / global_sigma_scale ** 2).item():.6f})")
         print_with_prefix(f"Cluster data from: {cluster_path}")
 
     if demo_sample_mode:
@@ -338,9 +345,6 @@ def do_sample(train_config, accelerator, ckpt_path=None, cfg_scale=None, model=N
     else:
         for i in pbar:
             # Sample inputs:
-            # z = torch.randn(n, model.in_channels, latent_size, latent_size, device=device)
-            y = torch.randint(0, train_config['data']['num_classes'], (n,), device=device)
-
             if cluster_type == 'kmeans':
                 cluster_means, cluster_ids = sample_random_clusters_kmeans(kmeans_centers, batch_size=n, latent_shape=(model.in_channels, latent_size, latent_size), device=device)
                 cluster_sigma = torch.ones_like(cluster_means)
@@ -354,18 +358,26 @@ def do_sample(train_config, accelerator, ckpt_path=None, cfg_scale=None, model=N
                 )
                 # cluster_sigma = torch.ones_like(cluster_means)
                 # cluster_sigma = cluster_sigma * 1.5  # x1.3 weighting
-            cluster_sigma = norm_cluster_sigma(cluster_sigma)
+            # cluster_sigma = norm_cluster_sigma(cluster_sigma)
+            cluster_sigma = cluster_sigma * global_sigma_scale # 9th~, all-cluster-wise norm
 
+            # eps = torch.randn_like(cluster_means)
+            # cluster = cluster_means + (eps * cluster_sigma)
+            # z = (0.5 * cluster) + (0.5 * eps)
+
+            cluster = cluster_means + (cluster_sigma * torch.randn_like(cluster_means))
             eps = torch.randn_like(cluster_means)
-            cluster = cluster_means + (eps * cluster_sigma)
             z = (0.5 * cluster) + (0.5 * eps)
+            # y = cluster_ids  # (n,) ∈ {0,...,29} # k conditioning
+
             ''' # for org '''
             # z = torch.randn(n, model.in_channels, latent_size, latent_size, device=device)
+            y = torch.randint(0, train_config['data']['num_classes'], (n,), device=device)
 
             # Setup classifier-free guidance:
             if using_cfg:
                 z = torch.cat([z, z], 0)
-                y_null = torch.tensor([1000] * n, device=device)
+                y_null = torch.tensor([train_config['data']['num_classes']] * n, device=device)
                 y = torch.cat([y, y_null], 0)
                 model_kwargs = dict(y=y, cfg_scale=cfg_scale, cfg_interval=True, cfg_interval_start=cfg_interval_start)
                 model_fn = model.forward_with_cfg
@@ -380,11 +392,17 @@ def do_sample(train_config, accelerator, ckpt_path=None, cfg_scale=None, model=N
             samples = (samples * latent_std) / latent_multiplier + latent_mean
             samples = vae.decode_to_images(samples)
 
+            cid_to_cls = {
+                cid: cls
+                for cls, cid_list in gmm_labels.items()
+                for cid in cid_list
+            }
+
             # Save samples to disk as individual .png files
             for i, sample in enumerate(samples):
                 index = i * accelerator.num_processes + accelerator.process_index + total
-                cls = y[:samples.shape[0]][i].item()
-                cid = cluster_ids[:samples.shape[0]][i].item()
+                cid = int(cluster_ids[:samples.shape[0]][i].item())
+                cls = cid_to_cls[cid]
                 class_dir = os.path.join(sample_folder_dir, f"class_{cls}")
                 cluster_dir = os.path.join(class_dir, f"cluster_{cid}")
                 os.makedirs(cluster_dir, exist_ok=True)
@@ -443,7 +461,7 @@ if __name__ == "__main__":
 
     # naive sample
     sample_folder_dir = do_sample(train_config, accelerator, ckpt_path=ckpt_dir, model=model, demo_sample_mode=args.demo)
-    
+
     if not args.demo:
         # calculate FID
         # Important: FID is only for reference, please use ADM evaluation for paper reporting

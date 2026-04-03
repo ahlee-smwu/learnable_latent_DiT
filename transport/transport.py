@@ -443,12 +443,15 @@ class Transport:
         if model_kwargs == None:
             model_kwargs = {}
 
-        # t, x0, x1 = self.sample_learnable_eps(x1, sp_timesteps, shifted_mu, learned_mu, learned_sigma)  # x0 생성에서 eps가 작용함, 이걸 learnable eps로 바꿈
-        t, x0, x1 = self.sample_learnable_eps_t_adp2(x1, sp_timesteps, shifted_mu, learned_mu, learned_sigma)  # x0 생성에서 eps가 작용함, 이걸 learnable eps로 바꿈
+        t, x0, x1 = self.sample(x1, sp_timesteps, shifted_mu) # org
+        # t, x0, x1 = self.sample_learnable_eps_t_adp2(x1, sp_timesteps, shifted_mu, learned_mu, learned_sigma)  # ~8th
         # x0,1: b,32,16,16
         # t: torch.Size([1])
 
-        t, xt, ut = self.path_sampler.plan(t, x0, x1) # if t=1: xt=x1
+        x0_gmm = learned_mu + learned_sigma * th.randn_like(learned_mu) # 9th~
+
+        # t, xt, ut = self.path_sampler.plan(t, x0, x1) # if t=1: xt=x1
+        t, xt, ut = self.path_sampler.plan_gmm_adaptive(t, x0_gmm, x1) # 9th~
         # t: time, xt: target of time t(=forward xt), ut: x0-x1, xt랑 관련없음
         import torch
         # torch.save({"x0": x0, "x1": x1, "xt": xt, "t": t}, "dit_tensor2_non_eps.pt")

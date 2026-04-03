@@ -134,6 +134,46 @@ class ICPlan:
         xt = self.compute_xt(t, x0, x1) # if t=1: xt=x1
         ut = self.compute_ut(t, x0, x1, xt)
         return t, xt, ut
+
+    def plan_gmm_adaptive(self, t, x0_gmm, x1, alpha=1.5, q0=0.5):
+        import torch
+        """
+        Time-adaptive GMM prior with clean straight-line velocity.
+
+        설계 원칙:
+        - t=0 (noise): x0 = 0.5*x0_gmm + 0.5*eps (GMM 강하게)
+        - t=0.5:       x0 = 0.11*x0_gmm + 0.89*eps (GMM 약하게)
+        - t=1 (data):  x0 → pure eps (GMM 없음)
+
+        velocity: ut = x1 - x0_blended (항상 직선, 부호 충돌 없음)
+
+        plan_eps와의 차이:
+        - plan_eps: ut에 correction term (1-t)*dq/dt*(x0_gmm-eps) 포함
+                   → t=0에서 coefficient(x0_gmm) = -2.0 (부호 충돌!)
+        - 이 함수: ut = x1 - x0_blended만
+                   → coefficient(x0_gmm) = -q(t) (항상 음수이지만 크기 적절)
+        """
+        t_expand = expand_t_like_x(t, x1)
+
+        # GMM 주입 비율: t=0에서 q0, 지수적으로 감소
+        q = q0 * torch.exp(-alpha * t_expand)
+        # alpha=1.5 권장:
+        #   t=0.0: q=0.500 (50% GMM)
+        #   t=0.3: q=0.236 (24% GMM)
+        #   t=0.6: q=0.111 (11% GMM)
+        #   t=1.0: q=0.050 (5% GMM → near pure Gaussian)
+
+        # t-adaptive noise: 이 t에서 사용할 blended noise
+        # x0_blended를 상수 취급 (각 학습 sample의 straight-line path 기준점)
+        x0_blended = q * x0_gmm + (1.0 - q) * th.randn_like(x0_gmm)
+
+        # Standard linear interpolation path
+        xt = t_expand * x1 + (1.0 - t_expand) * x0_blended
+        # Clean velocity: always points FROM x0_blended TOWARD x1
+        # 크기: ||x1 - x0_blended|| ≈ standard flow matching 수준
+        ut = x1 - x0_blended
+
+        return t, xt, ut
     
 
 class VPCPlan(ICPlan):

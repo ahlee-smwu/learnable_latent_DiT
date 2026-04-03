@@ -441,7 +441,7 @@ class LightningDiT(nn.Module):
                 half_eps = cond_eps
 
         eps = torch.cat([half_eps, half_eps], dim=0)
-        print('#########forward output:', torch.cat([eps, rest], dim=1).shape)
+        # print('#########forward output:', torch.cat([eps, rest], dim=1).shape)
         return torch.cat([eps, rest], dim=1)
 
 def get_2d_sincos_pos_embed(embed_dim, grid_size, cls_token=False, extra_tokens=0):

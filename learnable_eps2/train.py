@@ -335,6 +335,10 @@ def do_train(train_config, accelerator):
         gmm_use_weight = train_config['gmm']['use_weight']
         gmm_shell = torch.load(os.path.join(cluster_path, 'cluster_shell.pt'))
         reweight_lambda = train_config['gmm']['reweight_lambda']
+        global_sigma_scale = precompute_sigma_scale(gmm_covs, gmm_weights, gmm_pca, D=8192)
+        if accelerator.is_main_process:
+            logger.info(f"[GMM] global_sigma_scale = {global_sigma_scale.item():.4f}  "
+                        f"(global_mean_var = {(1.0 / global_sigma_scale ** 2).item():.6f})")
         if accelerator.is_main_process:
             logger.info(f"Cluster data from: {cluster_path}")
 
@@ -348,7 +352,6 @@ def do_train(train_config, accelerator):
             else:
                 x = x.to(device)
                 y = y.to(device)
-            model_kwargs = dict(y=y)
 
             '''Cluster matching'''
             if cluster_type == 'kmeans':
@@ -356,15 +359,16 @@ def do_train(train_config, accelerator):
                 cluster_sigma = torch.ones_like(x)
             elif cluster_type == 'gmm':
                 cluster_means, cluster_sigma, cluster_ids = get_cluster_gmm(
-                    x,y,
+                    x, y,
                     gmm_means, gmm_covs, gmm_weights, gmm_pca,
                     use_weight=gmm_use_weight,
-                    stochastic=False #True
+                    stochastic=False #True  # True
                 )
                 # cluster_sigma = torch.ones_like(x) # don't use gmm cov, use org I
                 # cluster_sigma = cluster_sigma * 1.3 # x1.3 weighting
             ## normalize sigma
-            cluster_sigma = norm_cluster_sigma(cluster_sigma)
+            # cluster_sigma = norm_cluster_sigma(cluster_sigma) # ~8th, batch-wise norm
+            cluster_sigma = cluster_sigma * global_sigma_scale # 9th~, all-cluster-wise norm
 
             # learned mu/sigma
             # learned_sigma = torch.randn_like(x)
@@ -372,6 +376,9 @@ def do_train(train_config, accelerator):
             # learned_sigma = torch.ones_like(x)
             # cluster_means = learned_mu
             # cluster_sigma = learned_sigma
+
+            # model_kwargs = dict(y=y)
+            model_kwargs = dict(y=cluster_ids)
 
             # loss_dict = transport.training_losses(model, x, model_kwargs)
             loss_dict = transport.training_losses_learnable_eps2(model, x, model_kwargs, learned_mu=cluster_means, learned_sigma=cluster_sigma) # for learnable eps
@@ -846,6 +853,67 @@ def norm_cluster_sigma(  #TO-DO # 배치단위에서만 정규화됨,,, 의도�
     norm_cluster_sigma = torch.sqrt(scaled_var + eps)
 
     return norm_cluster_sigma
+
+@torch.no_grad()
+def precompute_sigma_scale(gmm_covs, gmm_weights, gmm_pca, D=8192, eps=1e-8):
+    """
+    norm_cluster_sigma를 완전히 대체.
+
+    기존 문제:
+        norm_cluster_sigma는 배치 내 샘플들의 평균 분산으로 alpha를 계산 →
+        배치 구성이 달라질 때마다 정규화 스케일이 달라짐 → 학습 불안정
+
+    이 함수:
+        GMM 전체(모든 클래스, 모든 K개 클러스터)의 분산을 mixture weight로
+        가중평균한 값으로 스케일 팩터를 딱 한 번만 계산 → 학습 내내 고정
+
+    수식:
+        global_mean_var = sum_{cls,k} [ w_{cls,k} * mean_D(diag_var_{cls,k}) ]
+                          / sum_{cls,k} [ w_{cls,k} ]
+
+        global_sigma_scale = 1 / sqrt(global_mean_var)
+
+        사용: cluster_sigma_normed = cluster_sigma * global_sigma_scale
+              → E[cluster_sigma_normed^2] ≈ 1  (N(0,I) 스케일 정렬)
+
+    Args:
+        gmm_covs   : dict { cls(int) -> Tensor(K, d) }  PCA-space diag variances
+        gmm_weights: dict { cls(int) -> Tensor(K,)   }  mixture weights
+        gmm_pca    : dict { cls(int) -> {"components": Tensor(d,D)or(D,d),
+                                          "mean":       Tensor(D,)} }
+        D          : data-space dimension (default 8192 = 32*16*16)
+        eps        : numerical floor for clamping (same as get_cluster_gmm)
+
+    Returns:
+        global_sigma_scale : scalar tensor (on same device as gmm_covs entries)
+    """
+    weighted_var_sum = torch.tensor(0.0)
+    weight_sum       = torch.tensor(0.0)
+
+    for cls in gmm_covs:
+        v = gmm_covs[cls]              # (K, d)  PCA-space diag variances
+        w = gmm_weights[cls]           # (K,)    mixture weights
+
+        pca_comp = gmm_pca[cls]["components"]   # (d, D) or (D, d)
+        U  = _as_U_dD(pca_comp, D)             # (d, D)  — 기존 helper 그대로 사용
+        U2 = U * U                             # (d, D)
+
+        v_safe = torch.clamp(v, min=eps)       # (K, d)
+        # get_cluster_gmm의 reverse PCA와 동일한 연산:
+        # diag_var[k, i] = sum_j  v_safe[k,j] * U[j,i]^2
+        diag_var_all = v_safe @ U2             # (K, D)
+        # 각 클러스터의 D차원 평균 분산 → scalar per cluster
+        mean_var_per_cluster = diag_var_all.mean(dim=1)   # (K,)
+        # mixture weight로 가중합 누적
+        weighted_var_sum = weighted_var_sum + (w * mean_var_per_cluster).sum()
+        weight_sum       = weight_sum + w.sum()
+
+    # 전체 GMM 기준 가중 평균 분산
+    global_mean_var = weighted_var_sum / (weight_sum + eps)
+    # "평균 분산 = 1" 이 되도록 하는 고정 스케일 팩터
+    global_sigma_scale = 1.0 / torch.sqrt(global_mean_var + eps)
+
+    return global_sigma_scale
 
 def compute_reweight(dist, cluster_ids, gmm_shell, lambda_=0.6):
     # dist:        (B,)  float tensor

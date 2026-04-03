@@ -195,10 +195,12 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--real_dir", type=str, default='/mnt/HDD_raid1/lsun/church_outdoor_train/church')
-    parser.add_argument("--real_cluster_base_dir", type=str, default="/mnt/HDD_raid1/lsun/church_outdoor_train_gmm/30_diag/class_0/")
+    # parser.add_argument("--real_dir", type=str, default='/mnt/HDD_raid1/lsun/church_outdoor_train/church') #a6000
+    parser.add_argument("--real_dir", type=str, default="/home/elicer/dataset/church_outdoor_train/church/") #elice
+    # parser.add_argument("--real_cluster_base_dir", type=str, default="/mnt/HDD_raid1/lsun/church_outdoor_train_gmm/30_diag/class_0/") #a6000
+    parser.add_argument("--real_cluster_base_dir", type=str, default="/home/elicer/dataset/church_outdoor_train_gmm/30_diag/class_0/") #elice
     # parser.add_argument("--gen_base_dir", type=str, default="output/5th_lightningdit_xl_vavae_f16d32_gmm30_use_weight/lightningdit-xl-1-ckpt-0063000-euler-20/class_0/")
-    parser.add_argument("--gen_base_dir", type=str, default="output/org_lightningdit_xl_vavae_f16d32_lsun/lightningdit-xl-1-ckpt-0033000-66ep-euler-250/class_0/")
+    parser.add_argument("--gen_base_dir", type=str, default="output/9th_lightningdit_xl_vavae_f16d32_gmm30_deterministic/lightningdit-xl-1-ckpt-0039440-euler-40/class_0/")
     args = parser.parse_args()
 
     main(args)

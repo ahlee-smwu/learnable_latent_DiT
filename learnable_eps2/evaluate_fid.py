@@ -7,11 +7,14 @@ from tqdm import tqdm
 from cleanfid import fid
 from torch.utils.data import DataLoader
 import pickle
+import random, tempfile
+from pathlib import Path
 
 def main(args):
     # 경로 설정
     gen_base_dir = args.gen_base_dir
-    real_base_dir = args.real_base_dir
+    real_base_dir = args.real_base_dir # cluster-wise
+    real_dir = args.real_dir # total dataset
     k_num = 30
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -51,27 +54,24 @@ def main(args):
     # -------------------------------
     # 2. 전체 클러스터 FID
     # -------------------------------
-    print("\nCalculating FID for ALL clusters combined...")
-
-    all_cluster_dir = os.path.join(gen_base_dir, "all_clusters_tmp")
-
-    # 임시 폴더 생성
-    os.makedirs(all_cluster_dir, exist_ok=True)
-
-    # 모든 cluster 이미지 모으기
-    for i in range(k_num):
-        cluster_path = os.path.join(gen_base_dir, f'cluster_{i}')
-        if not os.path.exists(cluster_path):
-            continue
-
-        for fname in os.listdir(cluster_path):
-            src = os.path.join(cluster_path, fname)
-            if not os.path.isfile(src):
-                continue
-
-            # 파일명 충돌 방지
-            dst = os.path.join(all_cluster_dir, f"cluster{i}_{fname}")
-            shutil.copy(src, dst)
+    # print("\nCalculating FID for ALL clusters combined...")
+    # all_cluster_dir = os.path.join(gen_base_dir, "all_clusters_tmp")
+    # os.makedirs(all_cluster_dir, exist_ok=True)
+    #
+    # # 모든 cluster 이미지 모으기
+    # for i in range(k_num):
+    #     cluster_path = os.path.join(gen_base_dir, f'cluster_{i}')
+    #     if not os.path.exists(cluster_path):
+    #         continue
+    #
+    #     for fname in os.listdir(cluster_path):
+    #         src = os.path.join(cluster_path, fname)
+    #         if not os.path.isfile(src):
+    #             continue
+    #
+    #         # 파일명 충돌 방지
+    #         dst = os.path.join(all_cluster_dir, f"cluster{i}_{fname}")
+    #         shutil.copy(src, dst)
 
     # 전체 FID 계산
     # fid_all = fid.compute_fid(
@@ -84,11 +84,13 @@ def main(args):
     #     batch_size=32
     # )
     fid_all = fid.compute_fid(
-        fdir1=gen_base_dir,
-        fdir2=real_base_dir,
+        fdir1=gen_base_dir, #gen_base_dir
+        fdir2=real_dir,
         mode="clean",
+        dataset_split="train",
         num_workers=8,
-        batch_size=32
+        batch_size=256, #32,
+        num_gen=50000
     )
 
     print(f"[FID] ALL clusters: {fid_all:.4f}")
@@ -182,9 +184,10 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    # parser.add_argument("--gen_base_dir", type=str, default='output/org_lightningdit_xl_vavae_f16d32_lsun/lightningdit-xl-1-ckpt-0033000-66ep-euler-250/class_0')
-    parser.add_argument("--gen_base_dir", type=str, default='/mnt/HDD2/dataset/lsun/church_outdoor_val/church') # a6000
-    parser.add_argument("--real_base_dir", type=str, default="/mnt/HDD2/dataset/lsun/church_outdoor_train/church")
+    parser.add_argument("--gen_base_dir", type=str, default='output/10th_lightningdit_xl_vavae_f16d32_gmm30_deterministic/lightningdit-xl-1-ckpt-0049300-euler-40-interval0.11-cfg7.00-shift0.30/class_0')
+    parser.add_argument("--real_base_dir", type=str, default="/mnt/HDD_raid1/lsun/church_outdoor_train_gmm/30_diag/class_0/") #a6000
+    # parser.add_argument("--real_dir", type=str, default="/mnt/HDD_raid1/lsun/church_outdoor_train/church/") #a6000
+    parser.add_argument("--real_dir", type=str, default="/home/elicer/dataset/church_outdoor_train/church/") #elice
     args = parser.parse_args()
 
     main(args)
