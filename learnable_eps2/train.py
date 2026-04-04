@@ -122,6 +122,7 @@ from transport import create_transport, Sampler
 # import pickle
 # import torch.nn.functional as F
 
+
 def do_train(train_config, accelerator):
     """
     Trains a LightningDiT.
@@ -358,7 +359,7 @@ def do_train(train_config, accelerator):
                 cluster_means, cluster_ids = get_cluster_kmeans(x, y, kmeans_centers)
                 cluster_sigma = torch.ones_like(x)
             elif cluster_type == 'gmm':
-                cluster_means, cluster_sigma, cluster_ids = get_cluster_gmm(
+                cluster_means, cluster_sigma, cluster_ids, cluster_pca_noise = get_cluster_gmm(
                     x, y,
                     gmm_means, gmm_covs, gmm_weights, gmm_pca,
                     use_weight=gmm_use_weight,
@@ -368,7 +369,12 @@ def do_train(train_config, accelerator):
                 # cluster_sigma = cluster_sigma * 1.3 # x1.3 weighting
             ## normalize sigma
             # cluster_sigma = norm_cluster_sigma(cluster_sigma) # ~8th, batch-wise norm
-            cluster_sigma = cluster_sigma * global_sigma_scale # 9th~, all-cluster-wise norm
+            cluster_sigma = (cluster_sigma * global_sigma_scale).detach() # 9th~, all-cluster-wise norm
+            cluster_pca_noise = (cluster_pca_noise * global_sigma_scale).detach()  # memory detach
+                # Global Sigma Scale: 2.252978
+                # [cluster_sigma]     Mean: 0.9517, Std: 0.2969, Min: 0.2304, Max: 4.8913
+                # [cluster_pca_noise] Mean: -0.0099, Std: 1.0393, Min: -9.4455, Max: 8.0200
+                # 👉 RMS of cluster_pca_noise: 1.0393 (Ideal: ~1.0)
 
             # learned mu/sigma
             # learned_sigma = torch.randn_like(x)
@@ -377,11 +383,16 @@ def do_train(train_config, accelerator):
             # cluster_means = learned_mu
             # cluster_sigma = learned_sigma
 
-            # model_kwargs = dict(y=y)
-            model_kwargs = dict(y=cluster_ids)
+            model_kwargs = dict(y=y)
+            # model_kwargs = dict(y=cluster_ids)
 
             # loss_dict = transport.training_losses(model, x, model_kwargs)
-            loss_dict = transport.training_losses_learnable_eps2(model, x, model_kwargs, learned_mu=cluster_means, learned_sigma=cluster_sigma) # for learnable eps
+            loss_dict = transport.training_losses_learnable_eps2(
+                model, x, model_kwargs,
+                learned_mu=cluster_means,
+                learned_sigma=cluster_sigma, learned_pca_noise=cluster_pca_noise
+            ) # for learnable eps
+
 
             '''reweighting fo data points by cluster shell'''
             # distance = torch.norm(x.view(x.shape[0], -1) - cluster_means.view(x.shape[0], -1), dim=1)  # (B,)
@@ -487,7 +498,7 @@ def do_train(train_config, accelerator):
                     if cluster_type == 'kmeans':
                         val_loss = evaluate(model, valid_loader, device, transport, cluster_type="kmeans",kmeans_centers=kmeans_centers)
                     elif cluster_type == 'gmm':
-                        val_loss = evaluate_eps(model,valid_loader,device,transport, cluster_type="gmm",gmm_means=gmm_means,gmm_covs=gmm_covs,gmm_weights=gmm_weights,gmm_pca=gmm_pca,gmm_use_weight=gmm_use_weight,)
+                        val_loss = evaluate_eps(model,valid_loader,device,transport, cluster_type="gmm",gmm_means=gmm_means,gmm_covs=gmm_covs,gmm_weights=gmm_weights,gmm_pca=gmm_pca,gmm_use_weight=gmm_use_weight,global_sigma_scale=global_sigma_scale)
                         # val_loss = evaluate(model,valid_loader,device,transport)
                     val_loss = torch.tensor(val_loss, device=device)
                     val_loss = accelerator.reduce(val_loss, reduction="mean")
@@ -635,6 +646,48 @@ def get_cluster_kmeans(x, y, centers):
     cluster_means = cluster_means.view(B, C, H, W)
     return cluster_means, cluster_ids
 
+def norm_cluster_sigma(
+    cluster_sigma,
+    lambda_mix=1.0,      # 1.0 = full normalization, <1 = mix with I
+    var_floor=0.0,       # optional lower bound on variance
+    var_ceil=None,       # optional upper bound on variance
+    eps=1e-8
+):
+    """
+    Normalize cluster_sigma so that:
+      - Global average variance = 1 (I-scale alignment)
+      - Relative structure per sample preserved
+      - Optional mixing with identity to avoid extreme values
+
+    Input:
+        cluster_sigma: (B, D)  data-space std
+    Output:
+        norm_cluster_sigma: (B, D)
+    """
+
+    # 1️⃣ Compute global mean variance
+    var = cluster_sigma ** 2
+    global_mean_var = var.mean()
+
+    # 2️⃣ Global scaling to match I
+    alpha = 1.0 / (global_mean_var + eps)
+    scaled_var = alpha * var
+
+    # 3️⃣ Optional mix with identity (variance=1)
+    if lambda_mix < 1.0:
+        scaled_var = (1.0 - lambda_mix) * 1.0 + lambda_mix * scaled_var
+
+    # 4️⃣ Optional clipping
+    if var_floor > 0.0:
+        scaled_var = torch.clamp(scaled_var, min=var_floor)
+    if var_ceil is not None:
+        scaled_var = torch.clamp(scaled_var, max=var_ceil)
+
+    # 5️⃣ Back to std
+    norm_cluster_sigma = torch.sqrt(scaled_var + eps)
+
+    return norm_cluster_sigma
+
 @torch.no_grad()
 ## 1st~4th에 쓴 함수, cov가 단일 scalar로 단순화됨(오류)
 def get_cluster_gmm_bf(
@@ -720,97 +773,102 @@ def _as_U_dD(components: torch.Tensor, D: int) -> torch.Tensor:
     raise ValueError(f"Unexpected PCA components shape {components.shape}. Expected (d,D) or (D,d) with D={D}.")
 
 ## 5th~
+@torch.no_grad()
 def get_cluster_gmm(
-    x, y,
-    gmm_means, gmm_covs, gmm_weights, gmm_pca,
-    use_weight=True,
-    stochastic=True,
-    eps=1e-8,
-    # optional stabilizers (필요 없으면 기본값 그대로)
-    var_floor=0.0,          # e.g. 1e-6 ~ 1e-3 (너 공간 스케일에 맞춰)
+        x, y,
+        gmm_means, gmm_covs, gmm_weights, gmm_pca,
+        use_weight=True,
+        stochastic=True,
+        eps=1e-8,
+        var_floor=0.0,
 ):
     device = x.device
-
-    # Flatten
+    B = x.shape[0]
     if x.dim() == 4:
         B, C, H, W = x.shape
-        D = C * H * W  # e.g. 8192
-        x_flat = x.view(B, D)
+        D = C * H * W
+        x_flat = x.reshape(B, D).detach()
     else:
-        B, D = x.shape
-        x_flat = x
+        D = x.shape[1]
+        x_flat = x.detach()
 
-    cluster_means_out = torch.empty_like(x_flat)
-    cluster_sigma_out = torch.empty_like(x_flat)
-    cluster_ids_out = torch.empty(B, dtype=torch.long, device=device)
+    # 1. 클래스별 파라미터를 현재 배치의 y 순서에 맞게 미리 수집 (Batch-wise gather)
+    # 루프를 돌지 않고 배치의 모든 샘플을 한 번에 처리하기 위함입니다.
+    # 각 gmm_... 리스트/딕셔너리에서 y에 해당하는 값을 꺼내 배치 텐서로 만듭니다.
 
-    # Process per class to use class-wise GMM/PCA
-    for cls_tensor in torch.unique(y):
-        cls = int(cls_tensor.item())
-        idx = (y == cls)
-        if idx.sum() == 0:
-            continue
+    means_all = torch.stack([gmm_means[int(i)] for i in y]).to(device)  # (B, K, D)
+    v_all = torch.stack([gmm_covs[int(i)] for i in y]).to(device)  # (B, K, d)
+    weights_all = torch.stack([gmm_weights[int(i)] for i in y]).to(device)  # (B, K)
 
-        x_cls = x_flat[idx]  # (B_cls, D)
+    # PCA 파라미터 수집
+    pca_comps = torch.stack([_as_U_dD(gmm_pca[int(i)]["components"], D) for i in y]).to(device)  # (B, d, D)
+    pca_means = torch.stack([gmm_pca[int(i)]["mean"] for i in y]).to(device)  # (B, D)
 
-        means = gmm_means[cls].to(device)       # (K, D)  data-space means
-        weights = gmm_weights[cls].to(device)   # (K,)
-        v = gmm_covs[cls].to(device)            # (K, d=256) PCA-space diag variances
+    v_safe = torch.clamp(v_all, min=eps)
+    d = v_safe.shape[2]
+    K = means_all.shape[1]
 
-        pca_comp = gmm_pca[cls]["components"].to(device)  # (d,D) or (D,d)
-        pca_mean = gmm_pca[cls]["mean"].to(device)        # (D,)
+    # 2. PCA 공간 투영 (Batch Matrix Multiplication)
+    # x_centered: (B, D), pca_means: (B, D) -> (B, 1, D)
+    x_centered = (x_flat - pca_means).unsqueeze(1)
+    # x_pca: (B, 1, D) @ (B, D, d) -> (B, d)
+    x_pca = torch.bmm(x_centered, pca_comps.transpose(1, 2)).squeeze(1)  # (B, d)
 
-        U = _as_U_dD(pca_comp, D)               # (d, D)
-        d = U.shape[0]
-        K = means.shape[0]
+    # means_pca: (B, K, D) - (B, 1, D) -> (B, K, D)
+    means_centered = means_all - pca_means.unsqueeze(1)
+    # means_pca: (B, K, D) @ (B, D, d) -> (B, K, d)
+    means_pca = torch.bmm(means_centered, pca_comps.transpose(1, 2))
 
-        # --- 1) Project x and means to PCA space ---
-        # x_pca = U (x - m)  implemented as (x-m) @ U.T
-        x_pca = (x_cls - pca_mean) @ U.T        # (B_cls, d)
-        means_pca = (means - pca_mean) @ U.T    # (K, d)
+    # 3. Mahalanobis 거리 계산 (메모리 효율적 전개)
+    # (x-m)^2 / v = x^2/v + m^2/v - 2xm/v
+    # x_pca: (B, d), means_pca: (B, K, d), v_safe: (B, K, d)
 
-        # --- 2) Compute posterior in PCA space using diag Gaussian ---
-        v_safe = torch.clamp(v, min=eps)        # (K, d)
+    x_sq_v = (x_pca.unsqueeze(1) ** 2 / v_safe).sum(dim=2)  # (B, K)
+    m_sq_v = (means_pca ** 2 / v_safe).sum(dim=2)  # (B, K)
+    xm_v = (x_pca.unsqueeze(1) * means_pca / v_safe).sum(dim=2)  # (B, K)
 
-        diff = x_pca[:, None, :] - means_pca[None, :, :]        # (B_cls, K, d)
-        mahal = (diff * diff / v_safe[None, :, :]).sum(dim=2)   # (B_cls, K)
-        log_det = torch.log(v_safe).sum(dim=1)                  # (K,)
+    mahal = x_sq_v + m_sq_v - 2 * xm_v
+    mahal = torch.clamp(mahal, min=0.0)
 
-        log_prob = -0.5 * (mahal + log_det[None, :])            # (B_cls, K)
-        if use_weight:
-            log_prob = log_prob + torch.log(weights[None, :] + eps)
+    # 4. Posterior 및 ID 선택
+    log_det = torch.log(v_safe).sum(dim=2)  # (B, K)
+    log_prob = -0.5 * (mahal + log_det)
+    if use_weight:
+        log_prob += torch.log(weights_all + eps)
 
-        posterior = F.softmax(log_prob, dim=1)                  # (B_cls, K)
+    posterior = torch.softmax(log_prob, dim=1)
+    if stochastic:
+        cluster_ids = torch.multinomial(posterior, num_samples=1).squeeze(1)
+    else:
+        cluster_ids = posterior.argmax(dim=1)
 
-        if stochastic:
-            cluster_ids = torch.distributions.Categorical(posterior).sample()  # (B_cls,)
-        else:
-            cluster_ids = posterior.argmax(dim=1)                               # (B_cls,)
+    # 5. 결과 추출 (Batch Gather)
+    batch_idx = torch.arange(B, device=device)
+    sel_means = means_all[batch_idx, cluster_ids]  # (B, D)
+    sel_v = v_safe[batch_idx, cluster_ids]  # (B, d)
+    sel_U = pca_comps[batch_idx]  # (B, d, D)
 
-        # --- 3) Select data-space mean ---
-        sel_means = means[cluster_ids]  # (B_cls, D)
+    # 6. Diagonal Sigma (역투영)
+    # diag_var = sel_v @ U^2 -> (B, 1, d) @ (B, d, D) -> (B, D)
+    diag_var = torch.bmm(sel_v.unsqueeze(1), (sel_U ** 2)).squeeze(1)
+    if var_floor > 0.0:
+        diag_var = torch.clamp(diag_var, min=var_floor)
+    sel_sigma = torch.sqrt(diag_var + eps)
 
-        # --- 4) Reverse PCA to get data-space diagonal sigma ---
-        # diag_var_i = sum_j v_{k,j} * U_{j,i}^2
-        # U2: (d, D), sel_v: (B_cls, d) -> diag_var: (B_cls, D)
-        U2 = U * U
-        sel_v = v_safe[cluster_ids]            # (B_cls, d)
-        diag_var = sel_v @ U2                  # (B_cls, D)
+    # 7. PCA 노이즈 샘플링
+    z = torch.randn_like(sel_v)
+    # (B, 1, d) @ (B, d, D) -> (B, D)
+    pca_noise = torch.bmm((z * torch.sqrt(sel_v)).unsqueeze(1), sel_U).squeeze(1)
 
-        if var_floor > 0.0:
-            diag_var = torch.clamp(diag_var, min=var_floor)
-
-        sel_sigma = torch.sqrt(diag_var + eps)  # (B_cls, D)
-
-        cluster_means_out[idx] = sel_means
-        cluster_sigma_out[idx] = sel_sigma
-        cluster_ids_out[idx] = cluster_ids
-
+    # 8. 최종 반환
     if x.dim() == 4:
-        cluster_means_out = cluster_means_out.view(B, C, H, W)
-        cluster_sigma_out = cluster_sigma_out.view(B, C, H, W)
-
-    return cluster_means_out, cluster_sigma_out, cluster_ids_out
+        return (
+            sel_means.view(B, C, H, W).detach(),
+            sel_sigma.view(B, C, H, W).detach(),
+            cluster_ids.detach(),
+            pca_noise.view(B, C, H, W).detach()
+        )
+    return sel_means.detach(), sel_sigma.detach(), cluster_ids.detach(), pca_noise.detach()
 
 def norm_cluster_sigma(  #TO-DO # 배치단위에서만 정규화됨,,, 의도한 건 전체 cluster에서의 정규화임,, 나중에 수정하자
     cluster_sigma,
@@ -945,6 +1003,7 @@ def evaluate_eps(
     gmm_weights=None,
     gmm_pca=None,
     gmm_use_weight=True,
+    global_sigma_scale=None,
     clip_range=(0.0, 1.0),
 ):
     """
@@ -978,7 +1037,7 @@ def evaluate_eps(
             )
             cluster_sigma = torch.ones_like(x)
         elif cluster_type == "gmm":
-            cluster_means, cluster_sigma, cluster_ids = get_cluster_gmm(
+            cluster_means, cluster_sigma, cluster_ids, cluster_pca_noise = get_cluster_gmm(
                 x, y,
                 gmm_means, gmm_covs, gmm_weights, gmm_pca,
                 use_weight=gmm_use_weight,
@@ -988,15 +1047,16 @@ def evaluate_eps(
         else:
             raise ValueError(f"Unknown cluster_type: {cluster_type}")
 
+        cluster_sigma = (cluster_sigma * global_sigma_scale).detach()
+        cluster_pca_noise = (cluster_pca_noise * global_sigma_scale).detach()
+
         # -------------------------
         # Compute loss
         # -------------------------
         loss_dict = transport.training_losses_learnable_eps2(
-            model,
-            x,
-            model_kwargs,
+            model, x, model_kwargs,
             learned_mu=cluster_means,
-            learned_sigma=cluster_sigma,
+            learned_sigma=cluster_sigma, learned_pca_noise=cluster_pca_noise
         )
 
         if "cos_loss" in loss_dict:
@@ -1056,6 +1116,7 @@ def evaluate(
 
     avg_loss = running_loss / num_batches
     return avg_loss
+
 
 if __name__ == "__main__":
     # read config

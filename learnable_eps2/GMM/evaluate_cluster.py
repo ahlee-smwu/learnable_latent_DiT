@@ -13,7 +13,7 @@ from sklearn.metrics import silhouette_score, davies_bouldin_score, calinski_har
 from scipy.spatial.distance import cdist
 
 # -----------------------------
-# 1. Latent 및 Label 수집
+# 1. Latent 및 Label 수집 & Util
 # -----------------------------
 def collect_all_latents(loader):
     all_latents = []
@@ -24,6 +24,47 @@ def collect_all_latents(loader):
         all_labels.append(y.numpy())
     return np.concatenate(all_latents, axis=0), np.concatenate(all_labels, axis=0)
 
+def compute_neff_from_responsibility(R, eps=1e-12):
+    """
+    R: [N, K] posterior responsibility matrix
+    """
+    p_k = R.mean(axis=0)  # dataset-level component usage
+    H = -np.sum(p_k * np.log(p_k + eps))
+    N_eff = np.exp(H)
+    return N_eff, p_k
+
+def compute_responsibility_entropy(R, eps=1e-12):
+    """
+    R: [N, K] posterior responsibility
+    returns: mean entropy, median entropy
+    """
+    H_i = -np.sum(R * np.log(R + eps), axis=1)
+    return H_i.mean(), np.median(H_i)
+
+from sklearn.neighbors import NearestNeighbors
+
+def compute_knn_preservation(X, cluster_assigns, k=10, max_samples=5000):
+    """
+    X: [N, D]
+    cluster_assigns: [N]
+    """
+    N = len(X)
+    if N > max_samples:
+        idx = np.random.choice(N, max_samples, replace=False)
+        X = X[idx]
+        cluster_assigns = cluster_assigns[idx]
+
+    nbrs = NearestNeighbors(n_neighbors=k+1).fit(X)
+    _, knn_idx = nbrs.kneighbors(X)
+
+    preserve_ratios = []
+    for i in range(len(X)):
+        true_neighbors = knn_idx[i, 1:]
+        same_cluster = np.where(cluster_assigns == cluster_assigns[i])[0]
+        overlap = np.intersect1d(true_neighbors, same_cluster)
+        preserve_ratios.append(len(overlap) / k)
+
+    return np.mean(preserve_ratios)
 
 # -----------------------------
 # 2. GMM 상세 평가 및 시각화
@@ -41,6 +82,7 @@ def evaluate_gmm_performance(latents, labels, gmm_params, save_path):
         X = latents[mask]
         means = gmm_params['means'][cls]  # (K, D)
         weights = gmm_params['weights'][cls]  # (K,)
+        responsibilities = gmm_params.get('responsibilities', None)
 
         # 클러스터 할당 (가장 가까운 Mean 기준)
         # GMM의 soft assignment 대신 명확한 경계 확인을 위해 hard assignment 수행
@@ -55,13 +97,29 @@ def evaluate_gmm_performance(latents, labels, gmm_params, save_path):
         sil = silhouette_score(X[s_idx], cluster_assigns[s_idx])
         db_idx = davies_bouldin_score(X, cluster_assigns)
         ch_idx = calinski_harabasz_score(X[s_idx], cluster_assigns[s_idx])
+        # --- Effective Number of Modes (Neff) ---
+        if responsibilities is not None and cls in responsibilities:
+            R = responsibilities[cls]  # [N_cls, K]
+            Neff, p_k = compute_neff_from_responsibility(R)
+            Neff_norm = Neff / len(p_k)  # Neff / K (정규화)
+            H_mean, H_median = compute_responsibility_entropy(R)
+        else:
+            Neff, Neff_norm = np.nan, np.nan
+            H_mean, H_median = np.nan, np.nan
+        # --- Local k-NN Preservation ---
+        knn_preserve = compute_knn_preservation(X[s_idx],cluster_assigns[s_idx],k=10)
 
         report.append({
             'Class': cls,
             'Silhouette': sil,
             'DB_Index': db_idx,
             'CH_Index': ch_idx,
-            'Avg_Dist': np.min(dists, axis=1).mean()
+            'Avg_Dist': np.min(dists, axis=1).mean(),
+            'Neff': Neff,
+            'Neff_norm': Neff_norm,
+            'RespEnt_mean': H_mean,
+            'RespEnt_median': H_median,
+            'KNN_preserve': knn_preserve,
         })
 
         # --- (2) Inter-cluster Heatmap (중심 간 거리) ---
@@ -87,13 +145,21 @@ def evaluate_gmm_performance(latents, labels, gmm_params, save_path):
         plt.close()
 
     # --- 최종 결과 테이블 출력 ---
-    print("\n" + "=" * 65)
-    print(f"{'Class':<8} | {'Silh(↑)':<10} | {'DBI(↓)':<10} | {'CH(↑)':<10} | {'Dist(↓)':<10}")
-    print("-" * 65)
+    print("\n" + "=" * 95)
+    print(
+        f"{'Class':<6} | {'Silh':<8} | {'DBI':<8} | {'CH':<8} | "
+        f"{'Dist':<8} | {'Neff':<8} | {'N/K':<6} | "
+        f"{'Ent':<8} | {'kNN':<6}"
+    )
+    print("-" * 95)
     for r in report:
         print(
-            f"{r['Class']:<8} | {r['Silhouette']:>10.4f} | {r['DB_Index']:>10.4f} | {r['CH_Index']:>10.2f} | {r['Avg_Dist']:>10.4f}")
-    print("=" * 65)
+            f"{r['Class']:<6} | {r['Silhouette']:>8.4f} | {r['DB_Index']:>8.3f} | "
+            f"{r['CH_Index']:>8.1f} | {r['Avg_Dist']:>8.2f} | "
+            f"{r['Neff']:>8.2f} | {r['Neff_norm']:>6.3f} | "
+            f"{r['RespEnt_mean']:>8.3f} | {r['KNN_preserve']:>6.3f}"
+        )
+    print("=" * 95)
 
 # -----------------------------
 # 3. Main 실행부

@@ -432,7 +432,8 @@ class Transport:
             sp_timesteps=None,
             shifted_mu=0,
             learned_mu=None,
-            learned_sigma=None
+            learned_sigma=None,
+            learned_pca_noise=None
     ):
         """Loss for training the score model
         Args:
@@ -443,18 +444,19 @@ class Transport:
         if model_kwargs == None:
             model_kwargs = {}
 
-        t, x0, x1 = self.sample(x1, sp_timesteps, shifted_mu) # org
+        t, x0, x1 = self.sample(x1, sp_timesteps, shifted_mu) # org, 9th
         # t, x0, x1 = self.sample_learnable_eps_t_adp2(x1, sp_timesteps, shifted_mu, learned_mu, learned_sigma)  # ~8th
         # x0,1: b,32,16,16
         # t: torch.Size([1])
 
-        x0_gmm = learned_mu + learned_sigma * th.randn_like(learned_mu) # 9th~
+        if learned_pca_noise is not None:
+            x0_gmm = learned_mu + learned_pca_noise # 11th~ # pca full cov noise
+        else:
+            x0_gmm = learned_mu + learned_sigma * th.randn_like(learned_mu) # 9th,10th # latent diag cov noise
 
         # t, xt, ut = self.path_sampler.plan(t, x0, x1) # if t=1: xt=x1
         t, xt, ut = self.path_sampler.plan_gmm_adaptive(t, x0_gmm, x1) # 9th~
         # t: time, xt: target of time t(=forward xt), ut: x0-x1, xt랑 관련없음
-        import torch
-        # torch.save({"x0": x0, "x1": x1, "xt": xt, "t": t}, "dit_tensor2_non_eps.pt")
 
         model_output = model(xt, t, **model_kwargs)  # pred of model
         B, *_, C = xt.shape
