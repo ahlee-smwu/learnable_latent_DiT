@@ -1,10 +1,9 @@
 <div align="center">
 
-<h2>⚡Reconstruction <i>vs.</i> Generation:
+<h2> RAPID: Robust Adaptive Prior Integration Diffusion </h2>
 
-Taming Optimization Dilemma in Latent Diffusion Models</h2>
-
-**_FID=1.35 on ImageNet-256 & 21.8x faster training than DiT!_**
+- 40 NFE: FID 5.40 on ImageNet-1K, trained for 50 epochs!
+- 84% fewer NFEs, 6.3× faster sampling than baseline!
 
 [Jingfeng Yao](https://github.com/JingfengYao)¹, [Bin Yang](https://www.cs.toronto.edu/~byang/)², [Xinggang Wang](https://xwcv.github.io/index.htm)¹*
 
